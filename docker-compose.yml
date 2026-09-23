@@ -1,0 +1,63 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dsr}
+      POSTGRES_USER: ${POSTGRES_USER:-dsr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dsr}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build: .
+    environment: &app-env
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-local-development-secret}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-0}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      POSTGRES_DB: ${POSTGRES_DB:-dsr}
+      POSTGRES_USER: ${POSTGRES_USER:-dsr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dsr}
+      POSTGRES_HOST: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+    command: sh -c "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    environment: *app-env
+    command: celery -A config.celery:app worker --loglevel=INFO
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: .
+    environment: *app-env
+    command: celery -A config.celery:app beat --loglevel=INFO
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
