@@ -1,0 +1,60 @@
+{% extends "dsr/base.html" %}
+{% block title %}DPO workspace{% endblock %}
+{% block content %}
+<h1>DPO request queue</h1>
+<p>Signed in as mock DPO <code>{{ dpo_id }}</code>. Requests contain synthetic prototype data only.</p>
+<section class="card">
+  <strong>{{ total_count }}</strong> total requests
+  &nbsp; · &nbsp;
+  <strong>{{ filtered_count }}</strong> matching the current filters
+  &nbsp; · &nbsp;
+  <strong>{{ overdue_count }}</strong> overdue active requests
+</section>
+<section class="card">
+  <h2>Filter request queue</h2>
+  <form method="get">
+    <label for="state">Status</label>
+    <select id="state" name="state">
+      <option value="">All statuses</option>
+      {% for value, label in states %}<option value="{{ value }}" {% if state_filter == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+    <label for="type">Request type</label>
+    <select id="type" name="type">
+      <option value="">All request types</option>
+      {% for value, label in request_types %}<option value="{{ value }}" {% if type_filter == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+    <label for="assigned_to">Assigned staff ID</label>
+    <input id="assigned_to" name="assigned_to" value="{{ assignee_filter }}">
+    <label for="queue">Priority queue</label>
+    <select id="queue" name="queue">
+      <option value="">All cases</option>
+      <option value="overdue" {% if queue_filter == "overdue" %}selected{% endif %}>Overdue active cases</option>
+      <option value="unassigned" {% if queue_filter == "unassigned" %}selected{% endif %}>Unassigned cases</option>
+      <option value="escalated" {% if queue_filter == "escalated" %}selected{% endif %}>Escalated cases</option>
+    </select>
+    <p><button type="submit">Filter</button> <a href="{% url 'dpo-home' %}">Clear filters</a></p>
+  </form>
+  <p><a class="button" href="{% url 'dpo-export' %}?{{ request.GET.urlencode }}">Download filtered CSV report</a></p>
+</section>
+{% if requests %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Reference</th><th>Subject</th><th>Type</th><th>Department</th><th>Status</th><th>Owner</th><th>Target response date</th><th>Queue</th></tr></thead>
+    <tbody>
+      {% for item in requests %}
+        <tr>
+          <td>DSR-{{ item.pk }}</td>
+          <td>{{ item.patient_id }}</td>
+          <td>{{ item.get_request_type_display }}</td>
+          <td>{{ item.department|default:"Unassigned" }}</td>
+          <td>{{ item.get_state_display }}</td>
+          <td>{{ item.assigned_to|default:"Unassigned" }}</td>
+          <td>{% if item.is_overdue %}<span class="error">Overdue</span><br>{% endif %}{{ item.response_due_at|date:"j M Y, H:i" }}</td>
+          <td><a href="{% url 'dpo-request' item.pk %}">Review request</a></td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+{% else %}
+  <p>No requests are currently in the queue.</p>
+{% endif %}
+{% endblock %}

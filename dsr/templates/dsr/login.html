@@ -1,0 +1,20 @@
+{% extends "dsr/base.html" %}
+{% block title %}Demo sign-in{% endblock %}
+{% block content %}
+<h1>Prototype sign-in</h1>
+<div class="card">
+  <p>This demo uses a typed identifier and role; it does not verify identity. Use mock IDs only.</p>
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  <form method="post">
+    {% csrf_token %}
+    <label for="role">Workspace</label>
+    <select id="role" name="role">
+      <option value="patient" {% if role == "patient" %}selected{% endif %}>Patient portal</option>
+      <option value="dpo" {% if role == "dpo" %}selected{% endif %}>DPO workspace</option>
+    </select>
+    <label for="principal_id">Mock patient or staff ID</label>
+    <input id="principal_id" name="principal_id" required maxlength="128" autocomplete="off">
+    <p><button type="submit">Continue to demo</button></p>
+  </form>
+</div>
+{% endblock %}

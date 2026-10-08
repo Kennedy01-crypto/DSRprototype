@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}DSR workspace{% endblock %}</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font: 16px/1.55 system-ui, sans-serif;
+      color: #172c3b;
+      background: #f3f7f8;
+      --ink: #172c3b;
+      --muted: #587080;
+      --line: #d5e1e5;
+      --brand: #0b586b;
+      --brand-dark: #123b52;
+      --surface: #fff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    body > header { background: var(--brand-dark); color: #fff; padding: .85rem max(1rem, calc((100% - 1120px) / 2)); display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+    body > header a { color: #fff; }
+    main { max-width: 1120px; margin: 1.7rem auto 4rem; padding: 0 1.2rem; }
+    h1, h2, h3 { color: var(--ink); line-height: 1.2; }
+    h1 { font-size: clamp(1.8rem, 4vw, 2.5rem); margin: .15rem 0 .5rem; letter-spacing: -.025em; }
+    h2 { font-size: 1.3rem; margin-top: 0; }
+    h3 { font-size: 1.05rem; margin-top: 1.6rem; }
+    p { max-width: 78ch; }
+    a { color: #075a73; }
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: .85rem; padding: clamp(1rem, 2.5vw, 1.5rem); margin: 1.15rem 0; box-shadow: 0 3px 12px #183d4c0a; }
+    .notice { background: #fff8e5; border: 1px solid #efdda8; border-left: 4px solid #bc8400; border-radius: .45rem; padding: .8rem 1rem; color: #573e08; }
+    .error { color: #a21b1b; }
+    .eyebrow { color: var(--muted); font-size: .75rem; font-weight: 750; letter-spacing: .1em; margin: 0 0 .35rem; }
+    .case-header, .page-heading { display: flex; justify-content: space-between; align-items: center; gap: 1.5rem; padding: 1rem 0 .4rem; }
+    .case-header p, .page-heading p { color: var(--muted); }
+    .status-stack { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5rem; }
+    .status-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: .35rem .7rem; background: #e9f0f3; color: #294452; font-size: .84rem; font-weight: 650; }
+    .status-alert { background: #fff0e8; color: #8e3216; }
+    .status-good { background: #e5f5eb; color: #17643c; }
+    .section-nav { display: flex; gap: .45rem; overflow-x: auto; padding: .75rem 0; border-bottom: 1px solid var(--line); }
+    .section-nav a { text-decoration: none; white-space: nowrap; padding: .45rem .7rem; border-radius: .45rem; font-size: .9rem; font-weight: 600; }
+    .section-nav a:hover, .section-nav a:focus-visible { background: #e5eff2; }
+    .fact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: .8rem; margin: 0 0 1rem; }
+    .fact-grid div { background: #f5f8f9; border-radius: .55rem; padding: .7rem .8rem; }
+    .fact-grid dt { color: var(--muted); font-size: .82rem; }
+    .fact-grid dd { margin: .2rem 0 0; font-weight: 650; }
+    .section-heading, .version-heading { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+    .section-heading h2 { margin-bottom: 0; }
+    label { display: block; font-weight: 650; margin: .85rem 0 .3rem; }
+    input, select, textarea, button { font: inherit; }
+    input, select, textarea { max-width: 100%; width: 100%; padding: .7rem .75rem; border: 1px solid #9aabb5; border-radius: .45rem; background: #fff; color: var(--ink); }
+    textarea { min-height: 7rem; resize: vertical; }
+    input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px solid #60b5c7; outline-offset: 2px; }
+    button, .button { border: 0; border-radius: .45rem; background: var(--brand); color: #fff; padding: .68rem 1rem; cursor: pointer; text-decoration: none; display: inline-block; font-weight: 650; }
+    button:hover, .button:hover { background: #084757; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .button-secondary { background: #e8f1f3; color: #174758; }
+    table { width: 100%; border-collapse: collapse; background: #fff; }
+    th, td { text-align: left; padding: .75rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { background: #edf3f5; color: #294452; font-size: .88rem; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: .55rem; }
+    .table-wrap table { min-width: 680px; }
+    code { background: #edf1f3; padding: .1rem .3rem; border-radius: .2rem; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f5f8f9; border: 1px solid var(--line); border-radius: .5rem; padding: 1rem; font: inherit; }
+    .version-list { display: grid; gap: .8rem; }
+    .version-card { border: 1px solid var(--line); border-radius: .65rem; padding: 1rem; }
+    .version-card pre { margin-bottom: .75rem; }
+    .published-response { background: #eef8f1; border: 1px solid #cce7d4; border-radius: .55rem; padding: .75rem; margin-bottom: .9rem; min-width: 230px; }
+    .published-response summary { cursor: pointer; font-weight: 700; color: #17643c; }
+    .response-content { white-space: normal; }
+    .breadcrumb { color: var(--muted); font-size: .9rem; }
+    .notice + h1 { margin-top: 1.4rem; }
+    @media (max-width: 650px) {
+      body > header { align-items: flex-start; flex-direction: column; }
+      main { margin-top: 1rem; padding: 0 .85rem; }
+      .case-header, .page-heading { align-items: flex-start; flex-direction: column; }
+      .status-stack { justify-content: flex-start; }
+      .section-heading, .version-heading { align-items: flex-start; flex-direction: column; }
+      .card { border-radius: .65rem; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/" style="font-weight:700;text-decoration:none">AAR DSR prototype</a>
+    {% if request.session.demo_role %}
+      <span>Demo {{ request.session.demo_role }}: {{ request.session.demo_principal_id }}
+        <form method="post" action="{% url 'demo-logout' %}" style="display:inline">{% csrf_token %}<button type="submit">Sign out</button></form>
+      </span>
+    {% endif %}
+  </header>
+  <main>
+    <p class="notice"><strong>Mock-data prototype:</strong> sign-in and workflow data are simulated. Do not enter real patient or clinical information. Deadline targets are configurable demo values, not legal advice.</p>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

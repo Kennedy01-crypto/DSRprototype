@@ -10,12 +10,27 @@ ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").sp
 INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.auth",
+    "django.contrib.sessions",
     "rest_framework",
     "dsr",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+]
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+            ],
+        },
+    },
 ]
 ROOT_URLCONF = "config.urls"
 WSGI_APPLICATION = "config.wsgi.application"
@@ -34,6 +49,8 @@ TIME_ZONE = "Africa/Nairobi"
 USE_I18N = True
 USE_TZ = True
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+DSR_LONG_RESPONSE_TARGET_DAYS = int(os.environ.get("DSR_LONG_RESPONSE_TARGET_DAYS", "30"))
+DSR_DEFAULT_RESPONSE_TARGET_DAYS = int(os.environ.get("DSR_DEFAULT_RESPONSE_TARGET_DAYS", "14"))
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ("dsr.authentication.PatientPortalJWTAuthentication",),
 }

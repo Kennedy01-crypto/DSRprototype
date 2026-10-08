@@ -9,7 +9,7 @@ from celery import shared_task
 from django.db import transaction
 from django.utils import timezone
 
-from .models import DSRDataQuarantine, DSRRequest
+from .models import DSRAuditLog, DSRDataQuarantine, DSRRequest
 
 
 def _simulate_fides_query(patient_id: str) -> dict[str, Any]:
@@ -53,14 +53,18 @@ def monitor_sla_deadlines() -> int:
     active_states = [
         DSRRequest.State.ACCEPTED, DSRRequest.State.DEPT_SEARCH,
         DSRRequest.State.PRIVACY_REVIEW, DSRRequest.State.LEGAL_REVIEW,
-        DSRRequest.State.RESPONSE_PREP,
+        DSRRequest.State.RESPONSE_PREP, DSRRequest.State.NEEDS_INFORMATION,
     ]
     overdue_requests = DSRRequest.objects.filter(
-        state__in=active_states, statutory_deadline__lt=timezone.now()
+        state__in=active_states, response_due_at__lt=timezone.now()
+    ).exclude(
+        pk__in=DSRAuditLog.objects.filter(
+            to_state=DSRRequest.State.ESCALATED
+        ).values("dsr_id")
     )
     escalated = 0
     for dsr in overdue_requests.iterator():
-        dsr.escalate(actor_id="sla-monitor", reason="Statutory deadline exceeded")
-        dsr.save(update_fields=("state", "updated_at"))
+        dsr.escalate(actor_id="sla-monitor", reason="Configured response target exceeded")
+        dsr.save(update_fields=("state", "escalated_from", "updated_at"))
         escalated += 1
     return escalated

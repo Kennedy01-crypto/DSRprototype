@@ -1,0 +1,308 @@
+{% extends "dsr/base.html" %}
+{% block title %}Review DSR-{{ dsr.pk }}{% endblock %}
+{% block content %}
+<p class="breadcrumb"><a href="{% url 'dpo-home' %}">DPO queue</a> / Case DSR-{{ dsr.pk }}</p>
+<header class="case-header">
+  <div>
+    <p class="eyebrow">CASE WORKSPACE · DSR-{{ dsr.pk }}</p>
+    <h1>{{ dsr.get_request_type_display }} request</h1>
+    <p>Submitted {{ dsr.submitted_at|date:"j M Y" }} · Subject <code>{{ dsr.patient_id }}</code></p>
+  </div>
+  <div class="status-stack">
+    <span class="status-pill">{{ dsr.get_state_display }}</span>
+    {% if dsr.is_overdue %}<span class="status-pill status-alert">Response target overdue</span>{% endif %}
+  </div>
+</header>
+{% for error in errors %}<p class="error" role="alert">{{ error }}</p>{% endfor %}
+<nav class="section-nav" aria-label="Case sections">
+  <a href="#overview">Overview</a><a href="#review-work">Review work</a>
+  <a href="#searches">Searches</a><a href="#decisions">Decisions</a>
+  <a href="#response">Response</a><a href="#activity">Activity</a>
+</nav>
+<section class="card case-overview" id="overview">
+  <h2>Request overview</h2>
+  <dl class="fact-grid">
+    <div><dt>Resolution</dt><dd>{{ dsr.get_resolution_status_display }}</dd></div>
+    <div><dt>Assigned to</dt><dd>{{ dsr.assigned_to|default:"Unassigned" }}</dd></div>
+    <div><dt>Department</dt><dd>{{ dsr.department|default:"Unassigned" }}</dd></div>
+    <div><dt>Response target</dt><dd>{{ dsr.response_due_at|date:"j M Y, H:i" }}</dd></div>
+  </dl>
+  <h3>Request details</h3>
+  <p>{{ dsr.description|linebreaksbr }}</p>
+</section>
+<section class="card" id="review-work">
+  <h2>Assignment</h2>
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="operation" value="assign">
+    <label for="assigned_to">Mock DPO/staff ID</label>
+    <input id="assigned_to" name="assigned_to" value="{{ dsr.assigned_to }}" maxlength="128">
+    <p><button type="submit">Save assignment</button></p>
+  </form>
+</section>
+<section class="card">
+  <h2>Review tasks</h2>
+  {% if tasks %}
+    <ul>
+      {% for task in tasks %}
+        <li>
+          <strong>{{ task.title }}</strong> — {{ task.get_status_display }}
+          {% if task.assigned_to %}(assigned to {{ task.assigned_to }}){% endif %}
+          {% if task.details %}<p>{{ task.details|linebreaksbr }}</p>{% endif %}
+          <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="operation" value="task_update">
+            <input type="hidden" name="task_id" value="{{ task.pk }}">
+            <label for="task-status-{{ task.pk }}">Update task</label>
+            <select id="task-status-{{ task.pk }}" name="status">
+              {% for value, label in task_statuses %}<option value="{{ value }}" {% if task.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select>
+            <button type="submit">Save task</button>
+          </form>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>No review tasks have been created.</p>
+  {% endif %}
+  <h3>Add a review task</h3>
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="operation" value="task_create">
+    <label for="task-title">Task</label>
+    <input id="task-title" name="title" maxlength="160" required>
+    <label for="task-details">Details</label>
+    <textarea id="task-details" name="details"></textarea>
+    <label for="task-assignee">Assigned staff ID (optional)</label>
+    <input id="task-assignee" name="assigned_to" maxlength="128">
+    <p><button type="submit">Add task</button></p>
+  </form>
+</section>
+<section class="card" id="searches">
+  <h2>Mock source-search checklist</h2>
+  <p>Recording a search does not connect to PARAS, CIMS, ERPS, or another system. Record summaries and evidence references only; do not paste source data or clinical details.</p>
+  <p>
+    {% if source_searches_complete %}
+      <strong>Checklist complete:</strong> every listed source search is complete.
+    {% else %}
+      <strong class="error">Checklist incomplete:</strong> add at least one source and complete all searches before recording a final decision or preparing a response.
+    {% endif %}
+  </p>
+  {% if source_searches %}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Mock source</th><th>Status</th><th>Outcome summary</th><th>Evidence reference</th><th>Update search</th></tr></thead>
+      <tbody>
+        {% for search in source_searches %}
+          <tr>
+            <td>{{ search.get_source_system_display }}</td>
+            <td>{{ search.get_status_display }}</td>
+            <td>{{ search.summary|default:"—"|linebreaksbr }}</td>
+            <td>{{ search.evidence_reference|default:"—" }}</td>
+            <td>
+              <form method="post">
+                {% csrf_token %}
+                <input type="hidden" name="operation" value="source_search_update">
+                <input type="hidden" name="search_id" value="{{ search.pk }}">
+                <label for="source-status-{{ search.pk }}">Status</label>
+                <select id="source-status-{{ search.pk }}" name="status">
+                  {% for value, label in source_search_statuses %}<option value="{{ value }}" {% if search.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+                </select>
+                <label for="source-summary-{{ search.pk }}">Outcome summary</label>
+                <textarea id="source-summary-{{ search.pk }}" name="summary">{{ search.summary }}</textarea>
+                <label for="source-evidence-{{ search.pk }}">Evidence reference (not source data)</label>
+                <input id="source-evidence-{{ search.pk }}" name="evidence_reference" value="{{ search.evidence_reference }}" maxlength="256">
+                <button type="submit">Save search</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  {% else %}
+    <p>No source searches recorded yet.</p>
+  {% endif %}
+  <h3>Add a mock source search</h3>
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="operation" value="source_search_create">
+    <label for="source-system">Source area</label>
+    <select id="source-system" name="source_system" required>
+      {% for value, label in source_systems %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+    </select>
+    <label for="source-initial-status">Status</label>
+    <select id="source-initial-status" name="status">
+      {% for value, label in source_search_statuses %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+    </select>
+    <label for="source-initial-summary">Outcome summary</label>
+    <textarea id="source-initial-summary" name="summary"></textarea>
+    <label for="source-initial-evidence">Evidence reference (optional; no source data)</label>
+    <input id="source-initial-evidence" name="evidence_reference" maxlength="256">
+    <p><button type="submit">Add source search</button></p>
+  </form>
+</section>
+<section class="card" id="decisions">
+  <h2>Review decisions</h2>
+  {% if decisions %}
+    <ul>
+      {% for decision in decisions %}
+        <li><strong>{{ decision.category }} — {{ decision.get_outcome_display }}</strong>
+          <p>{{ decision.rationale|linebreaksbr }}</p>
+          <small>Recorded by {{ decision.recorded_by }} on {{ decision.created_at|date:"j M Y, H:i" }}</small>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>No decision has been recorded.</p>
+  {% endif %}
+  <h3>Record a review decision</h3>
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="operation" value="decision">
+    <label for="decision-category">Category</label>
+    <input id="decision-category" name="category" value="overall" maxlength="80" required>
+    <label for="decision-outcome">Outcome</label>
+    <select id="decision-outcome" name="outcome" required>
+      {% for value, label in decision_outcomes %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+    </select>
+    <label for="decision-rationale">Rationale</label>
+    <textarea id="decision-rationale" name="rationale" required></textarea>
+    <p><button type="submit">Record decision</button></p>
+  </form>
+</section>
+<section class="card">
+  <h2>Patient updates</h2>
+  {% if communications %}
+    <ul>
+      {% for communication in communications %}
+        <li><p>{{ communication.message|linebreaksbr }}</p>
+          <small>{{ communication.get_direction_display }} · Recorded by {{ communication.created_by }} on {{ communication.created_at|date:"j M Y, H:i" }}</small>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>No patient update has been recorded.</p>
+  {% endif %}
+  <h3>Record an update</h3>
+  <p>Prototype only: this records a message for the patient portal; it does not send email or SMS.</p>
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="operation" value="communication">
+    <label for="communication-message">Message</label>
+    <textarea id="communication-message" name="message" required></textarea>
+    <p><button type="submit">Save patient update</button></p>
+  </form>
+</section>
+<section class="card" id="response">
+  <h2>Response preparation draft</h2>
+  <p>{{ response_draft.notice }}</p>
+  <p><strong>Readiness:</strong> {% if response_signoff_error %}<span class="status-pill status-alert">{{ response_signoff_error }}</span>{% else %}<span class="status-pill status-good">Ready for final response review</span>{% endif %}</p>
+  <h3>Recorded searches</h3>
+  {% if source_searches %}
+    <ul>
+      {% for search in source_searches %}
+        <li><strong>{{ search.get_source_system_display }} — {{ search.get_status_display }}</strong>
+          {% if search.summary %}<p>{{ search.summary|linebreaksbr }}</p>{% endif %}
+          {% if search.evidence_reference %}<small>Evidence reference: {{ search.evidence_reference }}</small>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>No source searches have been recorded.</p>
+  {% endif %}
+  <h3>Draft text (editable before finalization)</h3>
+  <p>Check the wording, requested outcome, and applicable policy. Finalization creates a new immutable version; publishing makes that version visible in this patient's portal. Neither action sends email or SMS.</p>
+  {% if dsr.state == "RESPONSE_PREP" %}
+  <form method="post" class="response-editor">
+    {% csrf_token %}
+    <input type="hidden" name="operation" value="response_finalize">
+    <label for="final-response">Final response content</label>
+    <textarea id="final-response" name="content" required>{{ response_draft.draft_text }}</textarea>
+    <button type="submit" {% if response_signoff_error %}disabled{% endif %}>Finalize new version</button>
+  </form>
+  {% endif %}
+  <h3>Finalized versions</h3>
+  {% if response_versions %}
+    <div class="version-list">
+      {% for version in response_versions %}
+        <article class="version-card">
+          <div class="version-heading">
+            <strong>Version {{ version.version }}</strong>
+            {% if version.publication %}<span class="status-pill status-good">Published {{ version.publication.published_at|date:"j M Y, H:i" }}</span>{% else %}<span class="status-pill">Finalized · not published</span>{% endif %}
+          </div>
+          <p><small>Finalized by {{ version.finalized_by }} · {{ version.finalized_at|date:"j M Y, H:i" }}</small></p>
+          <pre>{{ version.content }}</pre>
+          {% if not version.publication and dsr.state == "RESPONSE_PREP" %}
+          <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="operation" value="response_publish">
+            <input type="hidden" name="version_id" value="{{ version.pk }}">
+            <button type="submit" class="button-secondary" {% if response_signoff_error %}disabled{% endif %}>Publish to patient portal</button>
+          </form>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p>No finalized response versions yet.</p>
+  {% endif %}
+</section>
+{% if actions %}
+  <section class="card">
+    <h2>Record a review action</h2>
+    <form method="post">
+      {% csrf_token %}
+      <label for="action">Action</label>
+      <select id="action" name="action" required>
+        {% for label, value in actions %}<option value="{{ value }}" {% if value == "approve_and_close" and not dsr.has_published_response %}disabled{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+      {% if dsr.state == "RESPONSE_PREP" and not dsr.has_published_response %}
+        <p class="notice">Finalize and publish a response version before closing this request.</p>
+      {% endif %}
+      <label for="resolution_status">Final resolution (required when closing)</label>
+      <select id="resolution_status" name="resolution_status">
+        <option value="">Select if closing the request</option>
+        <option value="FULFILLED">Fulfilled</option>
+        <option value="PARTIALLY_FULFILLED">Partially fulfilled</option>
+        <option value="RETAINED">Retained with rationale</option>
+      </select>
+      <label for="reason">Reason / case note (required for rejection, escalation, information requests, resumption, and closure)</label>
+      <textarea id="reason" name="reason"></textarea>
+      <p><button type="submit">Record action</button></p>
+    </form>
+  </section>
+{% endif %}
+<section id="activity">
+  <h2>Case activity</h2>
+  {% if events %}
+    <ol>
+      {% for event in events %}
+        <li><strong>{{ event.get_event_type_display }}</strong> — {{ event.summary }}
+          <small>({{ event.actor_id }}, {{ event.timestamp|date:"j M Y, H:i:s" }})</small>
+        </li>
+      {% endfor %}
+    </ol>
+  {% else %}
+    <p>No case activity has been recorded.</p>
+  {% endif %}
+</section>
+<section>
+  <h2>Workflow audit trail</h2>
+  {% if audit_logs %}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Time</th><th>Actor</th><th>Change</th><th>Reason</th></tr></thead>
+      <tbody>
+        {% for event in audit_logs %}
+          <tr>
+            <td>{{ event.timestamp|date:"j M Y, H:i:s" }}</td>
+            <td>{{ event.actor_id }}</td>
+            <td>{{ event.from_state }} → {{ event.to_state }}</td>
+            <td>{{ event.reason|default:"—" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  {% else %}
+    <p>No workflow events have been recorded.</p>
+  {% endif %}
+</section>
+{% endblock %}

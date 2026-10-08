@@ -1,0 +1,98 @@
+{% extends "dsr/base.html" %}
+{% block title %}Patient portal{% endblock %}
+{% block content %}
+<header class="page-heading">
+  <p class="eyebrow">PATIENT WORKSPACE</p>
+  <h1>Your data requests</h1>
+  <p>Signed in as mock patient <code>{{ patient_id }}</code>. This prototype uses fictional workflow data only.</p>
+</header>
+<section class="card" id="new-request">
+  <h2>Submit a data request</h2>
+  <p>Use fictional details only. Do not include real clinical information.</p>
+  {% if errors %}
+    <div class="error" role="alert">
+      {% for field, messages in errors.items %}
+        {% for message in messages %}<p>{{ field }}: {{ message }}</p>{% endfor %}
+      {% endfor %}
+    </div>
+  {% endif %}
+  <form method="post">
+    {% csrf_token %}
+    <label for="request_type">Request type</label>
+    <select id="request_type" name="request_type" required>
+      <option value="">Choose a type</option>
+      <option value="ACCESS">Access</option>
+      <option value="PORTABILITY">Portability</option>
+      <option value="RECTIFICATION">Rectification</option>
+      <option value="ERASURE">Erasure</option>
+      <option value="RESTRICTION">Restriction</option>
+      <option value="OBJECTION">Objection</option>
+    </select>
+    <label for="description">What is your request about?</label>
+    <textarea id="description" name="description" required></textarea>
+    <label for="department">Department (optional)</label>
+    <input id="department" name="department" maxlength="128">
+    <p><button type="submit">Submit request</button></p>
+  </form>
+</section>
+<section class="card">
+  <div class="section-heading">
+    <div><p class="eyebrow">TRACKING</p><h2>Your requests</h2></div>
+    <a class="button button-secondary" href="#new-request">Submit a request</a>
+  </div>
+  {% if requests %}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Reference</th><th>Type</th><th>Status</th><th>Target response date</th><th>Time left</th><th>Updates</th></tr></thead>
+      <tbody>
+        {% for item in requests %}
+          <tr>
+            <td>DSR-{{ item.pk }}</td>
+            <td>{{ item.get_request_type_display }}</td>
+            <td>{{ item.get_state_display }}</td>
+            <td>{{ item.response_due_at|date:"j M Y, H:i" }}</td>
+            <td>{% if item.is_overdue %}<span class="error">Overdue</span>{% else %}{{ item.time_remaining }}{% endif %}</td>
+            <td>
+              {% for version in item.response_versions.all %}
+                {% if version.publication %}
+                  <details class="published-response">
+                    <summary>Final response · Version {{ version.version }}</summary>
+                    <p><small>Published {{ version.publication.published_at|date:"j M Y, H:i" }}</small></p>
+                    <div class="response-content">{{ version.content|linebreaksbr }}</div>
+                  </details>
+                {% endif %}
+              {% endfor %}
+              {% for update in item.communications.all %}
+                <p><strong>{{ update.get_direction_display }}</strong>: {{ update.message|linebreaksbr }}<br><small>{{ update.created_at|date:"j M Y, H:i" }}</small></p>
+              {% empty %}
+                No updates yet
+              {% endfor %}
+              {% if item.state == "NEEDS_INFORMATION" %}
+                <form method="post">
+                  {% csrf_token %}
+                  <input type="hidden" name="operation" value="patient_response">
+                  <input type="hidden" name="request_id" value="{{ item.pk }}">
+                  <label for="response-{{ item.pk }}">Provide the requested information</label>
+                  <textarea id="response-{{ item.pk }}" name="message" required></textarea>
+                  <button type="submit">Send information</button>
+                </form>
+              {% endif %}
+              {% if item.can_withdraw %}
+                <form method="post">
+                  {% csrf_token %}
+                  <input type="hidden" name="operation" value="withdraw">
+                  <input type="hidden" name="request_id" value="{{ item.pk }}">
+                  <label for="withdraw-reason-{{ item.pk }}">Withdrawal reason (optional)</label>
+                  <input id="withdraw-reason-{{ item.pk }}" name="reason">
+                  <button type="submit">Withdraw request</button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  {% else %}
+    <p>You have not submitted any requests in this mock-data workspace.</p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,10 +1,113 @@
 from django.urls import path
 
-from .views import DSRConsoleView, DSRTransitionView, MyRequestsView, SubmitDSRView
+from .views import (
+    DSRAssignmentView,
+    DSRCommunicationView,
+    DSRConsoleView,
+    DSRDecisionListView,
+    DSRCSVExportView,
+    DSRReviewTaskDetailView,
+    DSRReviewTaskListView,
+    DSRResponseDraftView,
+    DSRResponsePublishView,
+    DSRResponseVersionListView,
+    DSRSourceSearchDetailView,
+    DSRSourceSearchListView,
+    DSRTransitionView,
+    DSRWithdrawalView,
+    MyRequestsView,
+    PatientCommunicationView,
+    PatientPublishedResponsesView,
+    SubmitDSRView,
+    demo_login,
+    demo_logout,
+    dpo_home,
+    dpo_export,
+    dpo_request_detail,
+    homepage,
+    patient_home,
+)
 
 urlpatterns = [
+    path("", homepage, name="homepage"),
+    path("demo/login/", demo_login, name="demo-login"),
+    path("demo/logout/", demo_logout, name="demo-logout"),
+    path("patient/", patient_home, name="patient-home"),
+    path("dpo/", dpo_home, name="dpo-home"),
+    path("dpo/export/", dpo_export, name="dpo-export"),
+    path("dpo/requests/<int:pk>/", dpo_request_detail, name="dpo-request"),
+    path(
+        "api/v1/dpo/dsrs/<int:pk>/assignment/",
+        DSRAssignmentView.as_view(),
+        name="dpo-dsr-assignment",
+    ),
+    path(
+        "api/v1/dpo/dsrs/<int:pk>/tasks/",
+        DSRReviewTaskListView.as_view(),
+        name="dpo-dsr-tasks",
+    ),
+    path(
+        "api/v1/dpo/dsrs/<int:pk>/tasks/<int:task_pk>/",
+        DSRReviewTaskDetailView.as_view(),
+        name="dpo-dsr-task",
+    ),
+    path(
+        "api/v1/dpo/dsrs/<int:pk>/decisions/",
+        DSRDecisionListView.as_view(),
+        name="dpo-dsr-decisions",
+    ),
+    path(
+        "api/v1/dpo/dsrs/<int:pk>/source-searches/",
+        DSRSourceSearchListView.as_view(),
+        name="dpo-dsr-source-searches",
+    ),
+    path(
+        "api/v1/dpo/dsrs/<int:pk>/source-searches/<int:search_pk>/",
+        DSRSourceSearchDetailView.as_view(),
+        name="dpo-dsr-source-search",
+    ),
+    path(
+        "api/v1/dpo/dsrs/<int:pk>/response-draft/",
+        DSRResponseDraftView.as_view(),
+        name="dpo-dsr-response-draft",
+    ),
+    path(
+        "api/v1/dpo/dsrs/<int:pk>/response-versions/",
+        DSRResponseVersionListView.as_view(),
+        name="dpo-dsr-response-versions",
+    ),
+    path(
+        "api/v1/dpo/dsrs/<int:pk>/response-versions/<int:version_pk>/publish/",
+        DSRResponsePublishView.as_view(),
+        name="dpo-dsr-response-publish",
+    ),
+    path(
+        "api/v1/dsrs/<int:pk>/responses/",
+        PatientPublishedResponsesView.as_view(),
+        name="dsr-published-responses",
+    ),
+    path(
+        "api/v1/dpo/dsrs/<int:pk>/communications/",
+        DSRCommunicationView.as_view(),
+        name="dpo-dsr-communications",
+    ),
+    path(
+        "api/v1/dsrs/<int:pk>/communications/",
+        PatientCommunicationView.as_view(),
+        name="dsr-communications",
+    ),
     path("api/v1/dsrs/submit/", SubmitDSRView.as_view(), name="dsr-submit"),
     path("api/v1/dsrs/my-requests/", MyRequestsView.as_view(), name="dsr-my-requests"),
+    path(
+        "api/v1/dsrs/<int:pk>/withdraw/",
+        DSRWithdrawalView.as_view(),
+        name="dsr-withdraw",
+    ),
     path("api/v1/dpo/dsrs/", DSRConsoleView.as_view(), name="dpo-dsrs"),
+    path(
+        "api/v1/dpo/dsrs/export/",
+        DSRCSVExportView.as_view(),
+        name="dpo-dsrs-export",
+    ),
     path("api/v1/dpo/dsrs/<int:pk>/transition/", DSRTransitionView.as_view(), name="dpo-dsr-transition"),
 ]
