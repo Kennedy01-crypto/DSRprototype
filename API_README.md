@@ -124,8 +124,9 @@ curl http://localhost:8000/api/v1/dsrs/my-requests/ \
 ### `GET /api/v1/dpo/dsrs/`
 
 Returns all DSRs and a count of requests by department. Requires a DPO token.
-Optional query parameters are `state`, `type`, `assigned_to`, and `queue`.
-`queue` accepts `overdue`, `unassigned`, or `escalated`; filters can be combined.
+Optional query parameters are `state`, `type`, `department`, `assigned_to`, and `queue`.
+`queue` accepts `overdue`, `due_soon`, `unassigned`, or `escalated`; filters can be combined.
+`due_soon` includes active requests with a response target in the next seven days.
 Overdue includes active cases awaiting subject information. Asking for more
 information does not pause or reset the configured response target.
 
@@ -170,8 +171,9 @@ available action list is informational and the transition endpoint validates all
 actions and required fields.
 
 The response contains `request` (the same status fields returned by the queue),
-`activity` entries with `kind`, `actor_id`, `summary`, and `timestamp`, and
-`available_actions` entries with a display `label` and transition `action`.
+`activity` entries with `kind`, `actor_id`, `summary`, and `timestamp`,
+`communications` (the shared DPO/patient message thread), and `available_actions`
+entries with a display `label` and transition `action`.
 
 ### `GET /api/v1/dsrs/<id>/`
 

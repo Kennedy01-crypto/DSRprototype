@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable
 
 from django.db import transaction
@@ -109,6 +109,7 @@ def _filtered_dpo_requests(params: QueryDict):
     requests = DSRRequest.objects.all()
     state_filter = params.get("state", "")
     type_filter = params.get("type", "")
+    department_filter = params.get("department", "").strip()
     assignee_filter = params.get("assigned_to", "").strip()
     queue_filter = params.get("queue", "")
     valid_states = {value for value, _label in DSRRequest.State.choices}
@@ -121,11 +122,19 @@ def _filtered_dpo_requests(params: QueryDict):
         requests = requests.filter(request_type=type_filter)
     else:
         type_filter = ""
+    if department_filter:
+        requests = requests.filter(department__iexact=department_filter)
     if assignee_filter:
         requests = requests.filter(assigned_to__iexact=assignee_filter)
     now = timezone.now()
     if queue_filter == "overdue":
         requests = requests.filter(state__in=ACTIVE_STATES, response_due_at__lt=now)
+    elif queue_filter == "due_soon":
+        requests = requests.filter(
+            state__in=ACTIVE_STATES,
+            response_due_at__gt=now,
+            response_due_at__lte=now + timedelta(days=7),
+        )
     elif queue_filter == "unassigned":
         requests = requests.filter(assigned_to="", state__in=OPEN_QUEUE_STATES)
     elif queue_filter == "escalated":
@@ -135,6 +144,7 @@ def _filtered_dpo_requests(params: QueryDict):
     return requests, {
         "state_filter": state_filter,
         "type_filter": type_filter,
+        "department_filter": department_filter,
         "assignee_filter": assignee_filter,
         "queue_filter": queue_filter,
     }
@@ -903,6 +913,9 @@ class DSRCaseDetailView(DPOAPIView):
             {
                 "request": DSRStatusSerializer(dsr).data,
                 "activity": _case_activity(dsr),
+                "communications": DSRCommunicationReadSerializer(
+                    dsr.communications.all(), many=True
+                ).data,
                 "available_actions": [
                     {"label": label, "action": action}
                     for label, action in actions

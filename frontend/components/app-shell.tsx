@@ -9,6 +9,7 @@ import {
   ClipboardList,
   ChevronLeft,
   ChevronRight,
+  LayoutDashboard,
   FileText,
   HeartPulse,
   LogOut,
@@ -29,7 +30,8 @@ interface AppShellProps {
 
 const navItems = {
   dpo: [
-    { label: "Request queue", href: "/dpo", icon: ClipboardList },
+    { label: "Overview", href: "/dpo", icon: LayoutDashboard },
+    { label: "Request queue", href: "/dpo/requests", icon: ClipboardList },
   ],
   patient: [
     { label: "My requests", href: "/patient", icon: FileText },
@@ -194,7 +196,7 @@ export function AppShell({ role, principalId, children }: AppShellProps) {
                   key={href}
                   href={href}
                   className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
-                    pathname === href ? "bg-primary text-primary-foreground" : "bg-white"
+                    pathname === href || pathname.startsWith(`${href}/`) ? "bg-primary text-primary-foreground" : "bg-white"
                   }`}
                 >
                   <Icon className="size-4" />

@@ -8,7 +8,9 @@ import {
   CalendarClock,
   History,
   LoaderCircle,
+  MessageSquareText,
   Save,
+  Send,
   UserRound,
   Workflow,
 } from "lucide-react";
@@ -83,6 +85,8 @@ export function DpoRequestDetail({
   const [reason, setReason] = useState("");
   const [resolutionStatus, setResolutionStatus] = useState(resolutions[0][0]);
   const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [sendingMessage, setSendingMessage] = useState(false);
   const [loadError, setLoadError] = useState("");
 
   const loadCase = useCallback(async (showLoading = true) => {
@@ -161,6 +165,34 @@ export function DpoRequestDetail({
     }
   }
 
+  async function sendPatientMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmedMessage = message.trim();
+    if (!trimmedMessage) return;
+
+    setSendingMessage(true);
+    try {
+      const response = await fetch(`/api/requests/${id}/communications`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: trimmedMessage }),
+      });
+      const body = (await response.json()) as { detail?: string };
+      if (!response.ok) {
+        throw new Error(body.detail ?? "The message could not be sent.");
+      }
+      setMessage("");
+      toast.success("Message added to the patient portal.");
+      await loadCase(false);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "The message could not be sent.",
+      );
+    } finally {
+      setSendingMessage(false);
+    }
+  }
+
   const selectedAction = data?.available_actions.find(
     (item) => item.action === action,
   );
@@ -174,7 +206,7 @@ export function DpoRequestDetail({
     <AppShell role="dpo" principalId={principalId}>
       <div className="space-y-6">
         <Link
-          href="/dpo"
+          href="/dpo/requests"
           className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="size-4" />
@@ -412,6 +444,84 @@ export function DpoRequestDetail({
                 </Card>
               </div>
             </div>
+
+            <Card className="border-0 shadow-sm ring-1 ring-border/80">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <MessageSquareText className="size-4 text-primary" />
+                  Patient messages
+                </CardTitle>
+                <CardDescription>
+                  Messages appear in both portals. They are stored in this prototype; no email or SMS is sent.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                {data.communications.length === 0 ? (
+                  <p className="rounded-lg bg-muted/50 p-4 text-sm text-muted-foreground">
+                    No messages have been exchanged on this request yet.
+                  </p>
+                ) : (
+                  <ol className="space-y-3">
+                    {data.communications.map((communication) => {
+                      const fromDpo = communication.direction === "DPO to patient";
+                      return (
+                        <li
+                          key={communication.id}
+                          className={`rounded-xl border p-4 ${
+                            fromDpo ? "border-sky-200 bg-sky-50/70" : "bg-white"
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-sm font-semibold">
+                              {fromDpo ? "You · DPO" : "Patient"}
+                            </p>
+                            <time
+                              dateTime={communication.created_at}
+                              className="text-xs text-muted-foreground"
+                            >
+                              {formatDate(communication.created_at)}
+                            </time>
+                          </div>
+                          <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
+                            {communication.message}
+                          </p>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                )}
+
+                <form onSubmit={sendPatientMessage} className="space-y-3 border-t pt-5">
+                  <label htmlFor="patient-message" className="text-sm font-semibold">
+                    Send a message to the patient
+                  </label>
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    If you need information to continue, also use the workflow action to move the case to “Waiting for Subject Information”.
+                  </p>
+                  <Textarea
+                    id="patient-message"
+                    value={message}
+                    onChange={(event) => setMessage(event.target.value)}
+                    maxLength={5000}
+                    required
+                    placeholder="Write a question or update for the patient"
+                    disabled={sendingMessage}
+                  />
+                  <Button
+                    type="submit"
+                    disabled={sendingMessage || !message.trim()}
+                    className="gap-2"
+                  >
+                    {sendingMessage ? (
+                      <LoaderCircle className="size-4 animate-spin" />
+                    ) : (
+                      <Send className="size-4" />
+                    )}
+                    {sendingMessage ? "Sending…" : "Send message"}
+                  </Button>
+                </form>
+              </CardContent>
+            </Card>
 
             <Card className="border-0 shadow-sm ring-1 ring-border/80">
               <CardHeader>

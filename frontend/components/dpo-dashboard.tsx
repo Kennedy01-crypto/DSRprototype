@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   AlertCircle,
   ArrowDownUp,
+  Building2,
   CalendarClock,
   CheckCircle2,
   CircleUserRound,
@@ -43,6 +44,11 @@ import { RequestPagination, REQUESTS_PER_PAGE } from "@/components/request-pagin
 
 interface DPOProps {
   principalId: string;
+  initialFilters?: {
+    state: string;
+    queue: string;
+    department: string;
+  };
 }
 
 const states = [
@@ -72,6 +78,7 @@ const requestTypes = [
 const queues = [
   ["", "All cases"],
   ["overdue", "Overdue"],
+  ["due_soon", "Due in the next 7 days"],
   ["unassigned", "Unassigned"],
   ["escalated", "Escalated"],
 ];
@@ -91,12 +98,16 @@ function formatDate(value: string): string {
   }).format(new Date(value));
 }
 
-export function DpoDashboard({ principalId }: DPOProps) {
+export function DpoDashboard({
+  principalId,
+  initialFilters = { state: "", queue: "", department: "" },
+}: DPOProps) {
   const [data, setData] = useState<DPOQueueResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [state, setState] = useState("");
+  const [state, setState] = useState(initialFilters.state);
   const [requestType, setRequestType] = useState("");
-  const [queue, setQueue] = useState("");
+  const [queue, setQueue] = useState(initialFilters.queue);
+  const [department, setDepartment] = useState(initialFilters.department);
   const [assignedTo, setAssignedTo] = useState("");
   const [search, setSearch] = useState("");
   const [refresh, setRefresh] = useState(0);
@@ -108,6 +119,7 @@ export function DpoDashboard({ principalId }: DPOProps) {
     const params = new URLSearchParams();
     if (state) params.set("state", state);
     if (requestType) params.set("type", requestType);
+    if (department.trim()) params.set("department", department.trim());
     if (queue) params.set("queue", queue);
     if (assignedTo.trim()) params.set("assigned_to", assignedTo.trim());
     try {
@@ -134,7 +146,7 @@ export function DpoDashboard({ principalId }: DPOProps) {
     return () => {
       cancelled = true;
     };
-  }, [state, requestType, queue, assignedTo, refresh]);
+  }, [state, requestType, department, queue, assignedTo, refresh]);
 
   const visibleRequests = useMemo(() => {
     const requests = data?.requests ?? [];
@@ -227,7 +239,7 @@ export function DpoDashboard({ principalId }: DPOProps) {
               <FilterSelect label="Request type" value={requestType} options={requestTypes} onChange={(value) => { setRequestType(value); setPage(1); }} />
               <FilterSelect label="Queue" value={queue} options={queues} onChange={(value) => { setQueue(value); setPage(1); }} />
             </div>
-            <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_auto]">
               <label className="relative">
                 <span className="sr-only">Filter by assigned reviewer</span>
                 <CircleUserRound className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -238,6 +250,19 @@ export function DpoDashboard({ principalId }: DPOProps) {
                     setPage(1);
                   }}
                   placeholder="Filter by assigned staff ID"
+                  className="h-10 pl-9"
+                />
+              </label>
+              <label className="relative">
+                <span className="sr-only">Filter by department</span>
+                <Building2 className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={department}
+                  onChange={(event) => {
+                    setDepartment(event.target.value);
+                    setPage(1);
+                  }}
+                  placeholder="Filter by department"
                   className="h-10 pl-9"
                 />
               </label>
@@ -273,6 +298,7 @@ export function DpoDashboard({ principalId }: DPOProps) {
                     setState("");
                     setRequestType("");
                     setQueue("");
+                    setDepartment("");
                     setAssignedTo("");
                     setSearch("");
                     setPage(1);

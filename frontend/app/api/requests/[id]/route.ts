@@ -62,6 +62,44 @@ export async function GET(_request: Request, context: RouteContext) {
     session.role === "dpo"
       ? `/api/v1/dpo/dsrs/${id}/`
       : `/api/v1/dsrs/${id}/`;
+  if (session.role === "patient") {
+    try {
+      const [requestResponse, communicationResponse, publishedResponse] =
+        await Promise.all([
+          backendRequest(path, session),
+          backendRequest(`/api/v1/dsrs/${id}/communications/`, session),
+          backendRequest(`/api/v1/dsrs/${id}/responses/`, session),
+        ]);
+      for (const upstream of [
+        requestResponse,
+        communicationResponse,
+        publishedResponse,
+      ]) {
+        if (!upstream.ok) {
+          return NextResponse.json(
+            { detail: await backendError(upstream) },
+            { status: upstream.status },
+          );
+        }
+      }
+      const [requestData, communications, publishedResponses] =
+        await Promise.all([
+          requestResponse.json(),
+          communicationResponse.json(),
+          publishedResponse.json(),
+        ]);
+      return NextResponse.json({
+        ...requestData,
+        communications,
+        published_responses: publishedResponses,
+      });
+    } catch {
+      return NextResponse.json(
+        { detail: "Unable to reach the DSR API. Check that the web service is running." },
+        { status: 502 },
+      );
+    }
+  }
   return proxyRequest(path, session, "GET");
 }
 

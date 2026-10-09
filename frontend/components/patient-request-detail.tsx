@@ -6,9 +6,12 @@ import {
   AlertCircle,
   ArrowLeft,
   CalendarClock,
+  CheckCircle2,
+  MessageSquareText,
   CircleHelp,
   LoaderCircle,
   OctagonX,
+  Send,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -57,15 +60,19 @@ async function fetchRequest(id: number): Promise<PatientRequestDetailResponse> {
 export function PatientRequestDetail({
   id,
   principalId,
+  communicationsOnly = false,
 }: {
   id: number;
   principalId: string;
+  communicationsOnly?: boolean;
 }) {
   const [data, setData] = useState<PatientRequestDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [reason, setReason] = useState("");
   const [withdrawing, setWithdrawing] = useState(false);
+  const [reply, setReply] = useState("");
+  const [sendingReply, setSendingReply] = useState(false);
 
   const loadRequest = useCallback(async () => {
     setLoadError("");
@@ -133,13 +140,24 @@ export function PatientRequestDetail({
   return (
     <AppShell role="patient" principalId={principalId}>
       <div className="space-y-6">
-        <Link
-          href="/patient"
-          className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground"
-        >
-          <ArrowLeft className="size-4" />
-          Back to your requests
-        </Link>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Link
+            href={communicationsOnly ? `/patient/requests/${id}` : "/patient"}
+            className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft className="size-4" />
+            {communicationsOnly ? "Back to request details" : "Back to your requests"}
+          </Link>
+          {!communicationsOnly && (
+            <Link
+              href={`/patient/requests/${id}/communications`}
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-border bg-white px-3 text-sm font-medium hover:bg-muted"
+            >
+              <MessageSquareText className="size-4" />
+              Open messages
+            </Link>
+          )}
+        </div>
 
         {loading ? (
           <div className="space-y-4">
@@ -165,7 +183,7 @@ export function PatientRequestDetail({
               <CardContent className="flex flex-col justify-between gap-5 pt-6 sm:flex-row sm:items-start">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">
-                    YOUR REQUEST
+                    {communicationsOnly ? "REQUEST MESSAGES" : "YOUR REQUEST"}
                   </p>
                   <h1 className="mt-2 text-3xl font-semibold tracking-tight">
                     DSR-{data.id} · {data.request_type}
@@ -178,7 +196,7 @@ export function PatientRequestDetail({
               </CardContent>
             </Card>
 
-            <div className="grid gap-5 xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,1fr)]">
+            {!communicationsOnly && <div className="grid gap-5 xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,1fr)]">
               <Card className="border-0 shadow-sm ring-1 ring-border/80">
                 <CardHeader>
                   <CardTitle className="text-lg">Request details</CardTitle>
@@ -266,6 +284,165 @@ export function PatientRequestDetail({
                   )}
                 </CardContent>
               </Card>
+            </div>}
+
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,1fr)]">
+              <Card className="border-0 shadow-sm ring-1 ring-border/80">
+                <CardHeader>
+                  <CardTitle className="text-lg">Messages</CardTitle>
+                  <CardDescription>
+                    Questions and replies about your request. Messages are stored in this prototype and are not sent by email or SMS.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  {data.communications.length === 0 ? (
+                    <p className="rounded-lg bg-muted/50 p-4 text-sm text-muted-foreground">
+                      There are no messages on this request yet.
+                    </p>
+                  ) : (
+                    <ol className="space-y-3">
+                      {data.communications.map((communication) => {
+                        const fromDpo = communication.direction === "DPO to patient";
+                        return (
+                          <li
+                            key={communication.id}
+                            className={`rounded-xl border p-4 ${
+                              fromDpo ? "border-sky-200 bg-sky-50/70" : "bg-white"
+                            }`}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-sm font-semibold">
+                                {fromDpo ? "Message from the DPO" : "Your reply"}
+                              </p>
+                              <time
+                                dateTime={communication.created_at}
+                                className="text-xs text-muted-foreground"
+                              >
+                                {formatDate(communication.created_at)}
+                              </time>
+                            </div>
+                            <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
+                              {communication.message}
+                            </p>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  )}
+
+                  {data.state === "Waiting for Subject Information" && (
+                    <form
+                      onSubmit={async (event) => {
+                        event.preventDefault();
+                        if (!reply.trim()) return;
+                        setSendingReply(true);
+                        try {
+                          const response = await fetch(
+                            `/api/requests/${id}/communications`,
+                            {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ message: reply.trim() }),
+                            },
+                          );
+                          const body = (await response.json()) as { detail?: string };
+                          if (!response.ok) {
+                            throw new Error(body.detail ?? "Your reply could not be sent.");
+                          }
+                          toast.success("Your reply has been recorded.");
+                          setReply("");
+                          await loadRequest();
+                        } catch (error) {
+                          toast.error(
+                            error instanceof Error
+                              ? error.message
+                              : "Your reply could not be sent.",
+                          );
+                        } finally {
+                          setSendingReply(false);
+                        }
+                      }}
+                      className="space-y-3 border-t pt-5"
+                    >
+                      <div>
+                        <label htmlFor="patient-reply" className="text-sm font-semibold">
+                          Reply to the DPO
+                        </label>
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                          Keep your reply relevant to this request. Do not include sensitive health details in this demo.
+                        </p>
+                      </div>
+                      <Textarea
+                        id="patient-reply"
+                        value={reply}
+                        onChange={(event) => setReply(event.target.value)}
+                        maxLength={5000}
+                        required
+                        placeholder="Enter the information requested"
+                        disabled={sendingReply}
+                      />
+                      <Button
+                        type="submit"
+                        disabled={sendingReply || !reply.trim()}
+                        className="gap-2"
+                      >
+                        {sendingReply ? (
+                          <LoaderCircle className="size-4 animate-spin" />
+                        ) : (
+                          <Send className="size-4" />
+                        )}
+                        {sendingReply ? "Sending reply…" : "Send reply"}
+                      </Button>
+                    </form>
+                  )}
+                  {data.state !== "Waiting for Subject Information" &&
+                    data.communications.length > 0 && (
+                      <p className="border-t pt-4 text-xs text-muted-foreground">
+                        You can reply when the request is waiting for your information.
+                      </p>
+                    )}
+                </CardContent>
+              </Card>
+
+              {!communicationsOnly && <Card className="h-fit border-0 shadow-sm ring-1 ring-border/80">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-lg">
+                    <CheckCircle2 className="size-4 text-emerald-700" />
+                    Published responses
+                  </CardTitle>
+                  <CardDescription>
+                    Final responses published to your portal by the DPO.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {data.published_responses.length === 0 ? (
+                    <p className="rounded-lg bg-muted/50 p-4 text-sm text-muted-foreground">
+                      No final response has been published yet.
+                    </p>
+                  ) : (
+                    <ol className="space-y-4">
+                      {data.published_responses.map((response) => (
+                        <li key={response.version} className="rounded-xl border p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-sm font-semibold">
+                              Final response · Version {response.version}
+                            </p>
+                            <time
+                              dateTime={response.publication.published_at}
+                              className="text-xs text-muted-foreground"
+                            >
+                              {formatDate(response.publication.published_at)}
+                            </time>
+                          </div>
+                          <p className="mt-3 whitespace-pre-wrap text-sm leading-6">
+                            {response.content}
+                          </p>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </CardContent>
+              </Card>}
             </div>
           </>
         )}

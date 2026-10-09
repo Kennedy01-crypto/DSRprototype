@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { backendError, backendRequest } from "@/lib/backend";
 import { getDemoSession } from "@/lib/session";
 
-const FILTERS = ["state", "type", "assigned_to", "queue"] as const;
+const FILTERS = ["state", "type", "department", "assigned_to", "queue"] as const;
 
 export async function GET(request: Request) {
   const session = await getDemoSession();

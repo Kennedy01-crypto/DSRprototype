@@ -46,8 +46,28 @@ export interface DSRCaseDetailResponse {
   request: DSRRequest;
   activity: DSRCaseActivity[];
   available_actions: DSRTransitionAction[];
+  communications: PatientCommunication[];
 }
 
 export interface PatientRequestDetailResponse extends DSRRequest {
   can_withdraw: boolean;
+  communications: PatientCommunication[];
+  published_responses: PublishedResponse[];
+}
+
+export interface PatientCommunication {
+  id: number;
+  message: string;
+  direction: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface PublishedResponse {
+  version: number;
+  content: string;
+  publication: {
+    published_by: string;
+    published_at: string;
+  };
 }

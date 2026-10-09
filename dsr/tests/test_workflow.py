@@ -524,6 +524,12 @@ class DSRApiTests(TestCase):
     def test_information_request_and_patient_response_resume_case(self) -> None:
         request = self.create_request()
         self.client.credentials(HTTP_AUTHORIZATION="Bearer dpo:reviewer")
+        dpo_message = self.client.post(
+            f"/api/v1/dpo/dsrs/{request.pk}/communications/",
+            {"message": "Please clarify the scope of this synthetic request."},
+            format="json",
+        )
+        self.assertEqual(dpo_message.status_code, 201)
         asked = self.client.post(
             f"/api/v1/dpo/dsrs/{request.pk}/transition/",
             {"action": "request_information", "reason": "Clarify request scope"},
@@ -534,6 +540,15 @@ class DSRApiTests(TestCase):
         self.assertEqual(request.state, DSRRequest.State.NEEDS_INFORMATION)
 
         self.client.credentials(HTTP_AUTHORIZATION="Bearer patient:alice")
+        patient_thread = self.client.get(
+            f"/api/v1/dsrs/{request.pk}/communications/"
+        )
+        self.assertEqual(patient_thread.status_code, 200)
+        self.assertEqual(len(patient_thread.data), 1)
+        self.assertEqual(
+            patient_thread.data[0]["message"],
+            "Please clarify the scope of this synthetic request.",
+        )
         response = self.client.post(
             f"/api/v1/dsrs/{request.pk}/communications/",
             {"message": "Please include the fictional 2025 visit."},
@@ -546,7 +561,23 @@ class DSRApiTests(TestCase):
             request.communications.get().direction,
             DSRCommunication.Direction.PATIENT_TO_DPO,
         )
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer dpo:staff-1")
+        case_detail = self.client.get(f"/api/v1/dpo/dsrs/{request.pk}/")
+        self.assertEqual(case_detail.status_code, 200)
+        self.assertEqual(len(case_detail.data["communications"]), 2)
+        self.assertEqual(
+            {item["direction"] for item in case_detail.data["communications"]},
+            {"DPO to patient", "Patient to DPO"},
+        )
+        self.assertEqual(
+            {item["message"] for item in case_detail.data["communications"]},
+            {
+                "Please clarify the scope of this synthetic request.",
+                "Please include the fictional 2025 visit.",
+            },
+        )
         self.assertEqual(request.audit_logs.last().actor_id, "alice")
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer patient:alice")
         self.assertEqual(
             self.client.post(
                 f"/api/v1/dsrs/{request.pk}/communications/",
@@ -561,6 +592,10 @@ class DSRApiTests(TestCase):
             patient_id="=mock-formula",
             due_at=timezone.now() - timedelta(days=1),
         )
+        due_soon = self.create_request(
+            patient_id="due-soon",
+            due_at=timezone.now() + timedelta(days=3),
+        )
         unassigned = self.create_request(patient_id="unassigned")
         unassigned.assigned_to = "reviewer-2"
         unassigned.save(update_fields=("assigned_to",))
@@ -573,6 +608,20 @@ class DSRApiTests(TestCase):
         self.assertEqual(filtered.status_code, 200)
         self.assertEqual([item["id"] for item in filtered.data["requests"]], [overdue.pk])
         self.assertEqual(filtered.data["filters"]["queue_filter"], "overdue")
+        due_soon_filtered = self.client.get("/api/v1/dpo/dsrs/?queue=due_soon")
+        self.assertEqual(due_soon_filtered.status_code, 200)
+        self.assertEqual(
+            [item["id"] for item in due_soon_filtered.data["requests"]],
+            [due_soon.pk],
+        )
+        department_filtered = self.client.get(
+            "/api/v1/dpo/dsrs/?department=records"
+        )
+        self.assertEqual(department_filtered.status_code, 200)
+        self.assertIn(
+            due_soon.pk,
+            [item["id"] for item in department_filtered.data["requests"]],
+        )
         self.assertEqual(
             self.client.get("/api/v1/dpo/dsrs/?queue=escalated").data["requests"][0]["id"],
             escalated.pk,
