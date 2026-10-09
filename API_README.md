@@ -161,6 +161,25 @@ curl http://localhost:8000/api/v1/dpo/dsrs/ \
   -H "Authorization: Bearer dpo:caseworker1"
 ```
 
+### `GET /api/v1/dpo/dsrs/<id>/`
+
+Returns the request details, combined workflow and case activity (newest first),
+and the workflow actions currently available for its state. Requires a DPO token.
+Use the existing assignment and transition endpoints below to make changes; the
+available action list is informational and the transition endpoint validates all
+actions and required fields.
+
+The response contains `request` (the same status fields returned by the queue),
+`activity` entries with `kind`, `actor_id`, `summary`, and `timestamp`, and
+`available_actions` entries with a display `label` and transition `action`.
+
+### `GET /api/v1/dsrs/<id>/`
+
+Returns status and request details for the authenticated patient's own request,
+including `can_withdraw`. A request belonging to another patient returns `404`.
+Patients can withdraw eligible requests through the existing
+`POST /api/v1/dsrs/<id>/withdraw/` endpoint; final requests cannot be withdrawn.
+
 ### `POST /api/v1/dpo/dsrs/<id>/transition/`
 
 Runs a workflow action on the request identified by `<id>`. Requires a DPO token.
@@ -174,7 +193,7 @@ Request body:
 }
 ```
 
-`reason` is optional for routine progression actions and defaults to an empty string. A non-empty reason is required for `reject`, `escalate`, and `approve_and_close`. Closing also requires `resolution_status`, chosen from `FULFILLED`, `PARTIALLY_FULFILLED`, or `RETAINED`. Supported actions and their required current states are:
+`reason` is optional for routine progression actions and defaults to an empty string. A non-empty reason is required for `reject`, `escalate`, `approve_and_close`, `request_information`, and `resume_escalated`. Closing also requires `resolution_status`, chosen from `FULFILLED`, `PARTIALLY_FULFILLED`, or `RETAINED`. Supported actions and their required current states are:
 
 | Action | Required current state | Resulting state |
 | --- | --- | --- |

@@ -29,3 +29,25 @@ export interface DPOQueueResponse {
     queue_filter: string;
   };
 }
+
+export interface DSRCaseActivity {
+  kind: "transition" | "case";
+  actor_id: string;
+  summary: string;
+  timestamp: string;
+}
+
+export interface DSRTransitionAction {
+  label: string;
+  action: string;
+}
+
+export interface DSRCaseDetailResponse {
+  request: DSRRequest;
+  activity: DSRCaseActivity[];
+  available_actions: DSRTransitionAction[];
+}
+
+export interface PatientRequestDetailResponse extends DSRRequest {
+  can_withdraw: boolean;
+}

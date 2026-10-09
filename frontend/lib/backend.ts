@@ -20,11 +20,13 @@ export async function backendRequest(
 
 export async function backendError(response: Response): Promise<string> {
   const body = (await response.json().catch(() => null)) as
-    | { detail?: string; non_field_errors?: string[] }
+    | Record<string, unknown>
     | null;
-  return (
-    body?.detail ??
-    body?.non_field_errors?.join(" ") ??
-    `The DSR service returned ${response.status}.`
-  );
+  if (typeof body?.detail === "string") return body.detail;
+  const messages = body
+    ? Object.values(body).flatMap((value) =>
+        Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [],
+      )
+    : [];
+  return messages.join(" ") || `The DSR service returned ${response.status}.`;
 }

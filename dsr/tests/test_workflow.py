@@ -89,6 +89,18 @@ class DSRApiTests(TestCase):
         self.assertEqual(listed.status_code, 200)
         self.assertEqual(len(listed.data), 1)
 
+    def test_patient_case_detail_is_limited_to_their_own_requests(self) -> None:
+        own_request = self.create_request(patient_id="alice")
+        other_request = self.create_request(patient_id="bob")
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer patient:alice")
+
+        own_detail = self.client.get(f"/api/v1/dsrs/{own_request.pk}/")
+        other_detail = self.client.get(f"/api/v1/dsrs/{other_request.pk}/")
+
+        self.assertEqual(own_detail.status_code, 200)
+        self.assertTrue(own_detail.data["can_withdraw"])
+        self.assertEqual(other_detail.status_code, 404)
+
     def test_role_permissions_reject_cross_role_access(self) -> None:
         self.client.credentials(HTTP_AUTHORIZATION="Bearer patient:alice")
         self.assertEqual(self.client.get("/api/v1/dpo/dsrs/").status_code, 403)
@@ -97,6 +109,34 @@ class DSRApiTests(TestCase):
         self.assertEqual(
             self.client.get("/api/v1/dsrs/my-requests/").status_code, 403
         )
+
+    def test_dpo_case_detail_returns_available_actions_and_combined_activity(self) -> None:
+        request = self.create_request()
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer dpo:staff-1")
+
+        detail = self.client.get(f"/api/v1/dpo/dsrs/{request.pk}/")
+
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.data["request"]["id"], request.pk)
+        self.assertIn(
+            {
+                "label": "Start departmental search",
+                "action": "start_departmental_search",
+            },
+            detail.data["available_actions"],
+        )
+        self.assertEqual(detail.data["activity"][0]["kind"], "transition")
+        self.assertIn("Submitted", detail.data["activity"][0]["summary"])
+
+        assigned = self.client.post(
+            f"/api/v1/dpo/dsrs/{request.pk}/assignment/",
+            {"assigned_to": "reviewer-2"},
+            format="json",
+        )
+        self.assertEqual(assigned.status_code, 200)
+        detail = self.client.get(f"/api/v1/dpo/dsrs/{request.pk}/")
+        self.assertEqual(detail.data["activity"][0]["kind"], "case")
+        self.assertIn("reviewer-2", detail.data["activity"][0]["summary"])
 
     def test_transition_requires_reason_for_rejection_and_audits_changes(self) -> None:
         request = self.create_request()

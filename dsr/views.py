@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import re
+from datetime import datetime
 from typing import Callable
 
 from django.db import transaction
@@ -58,6 +59,42 @@ ACTIVE_STATES = (
 )
 OPEN_QUEUE_STATES = (*ACTIVE_STATES, DSRRequest.State.ESCALATED)
 
+TRANSITION_ACTIONS = {
+    DSRRequest.State.ACCEPTED: (
+        ("Start departmental search", "start_departmental_search"),
+        ("Request more information", "request_information"),
+        ("Reject request", "reject"),
+        ("Escalate", "escalate"),
+    ),
+    DSRRequest.State.DEPT_SEARCH: (
+        ("Send to privacy review", "send_to_privacy_review"),
+        ("Request more information", "request_information"),
+        ("Reject request", "reject"),
+        ("Escalate", "escalate"),
+    ),
+    DSRRequest.State.PRIVACY_REVIEW: (
+        ("Request legal review", "request_legal_review"),
+        ("Approve privacy review", "approve_privacy_review"),
+        ("Request more information", "request_information"),
+        ("Reject request", "reject"),
+        ("Escalate", "escalate"),
+    ),
+    DSRRequest.State.LEGAL_REVIEW: (
+        ("Approve legal review", "approve_legal_review"),
+        ("Request more information", "request_information"),
+        ("Reject request", "reject"),
+        ("Escalate", "escalate"),
+    ),
+    DSRRequest.State.RESPONSE_PREP: (
+        ("Approve and close", "approve_and_close"),
+        ("Request more information", "request_information"),
+        ("Escalate", "escalate"),
+    ),
+    DSRRequest.State.ESCALATED: (
+        ("Resume escalated case", "resume_escalated"),
+    ),
+}
+
 
 def _record_case_event(dsr: DSRRequest, actor_id: str, event_type: str, summary: str) -> None:
     DSRCaseEvent.objects.create(
@@ -101,6 +138,42 @@ def _filtered_dpo_requests(params: QueryDict):
         "assignee_filter": assignee_filter,
         "queue_filter": queue_filter,
     }
+
+
+def _case_activity(dsr: DSRRequest) -> list[dict[str, str]]:
+    activity: list[tuple[datetime, dict[str, str]]] = []
+    for item in dsr.audit_logs.all():
+        summary = (
+            f"{DSRRequest.State(item.from_state).label} → "
+            f"{DSRRequest.State(item.to_state).label}"
+        )
+        if item.reason:
+            summary += f": {item.reason}"
+        activity.append(
+            (
+                item.timestamp,
+                {
+                    "kind": "transition",
+                    "actor_id": item.actor_id,
+                    "summary": summary,
+                    "timestamp": item.timestamp.isoformat(),
+                },
+            )
+        )
+    for item in dsr.events.all():
+        activity.append(
+            (
+                item.timestamp,
+                {
+                    "kind": "case",
+                    "actor_id": item.actor_id,
+                    "summary": item.summary,
+                    "timestamp": item.timestamp.isoformat(),
+                },
+            )
+        )
+    activity.sort(key=lambda item: item[0], reverse=True)
+    return [record for _timestamp, record in activity]
 
 
 def _csv_safe_cell(value: object) -> str:
@@ -738,41 +811,6 @@ def dpo_request_detail(request: HttpRequest, pk: int) -> HttpResponse:
                         for field_errors in serializer.errors.values()
                         for message in field_errors
                     ]
-    actions_by_state = {
-        DSRRequest.State.ACCEPTED: (
-            ("Start departmental search", "start_departmental_search"),
-            ("Request more information", "request_information"),
-            ("Reject request", "reject"),
-            ("Escalate", "escalate"),
-        ),
-        DSRRequest.State.DEPT_SEARCH: (
-            ("Send to privacy review", "send_to_privacy_review"),
-            ("Request more information", "request_information"),
-            ("Reject request", "reject"),
-            ("Escalate", "escalate"),
-        ),
-        DSRRequest.State.PRIVACY_REVIEW: (
-            ("Request legal review", "request_legal_review"),
-            ("Approve privacy review", "approve_privacy_review"),
-            ("Request more information", "request_information"),
-            ("Reject request", "reject"),
-            ("Escalate", "escalate"),
-        ),
-        DSRRequest.State.LEGAL_REVIEW: (
-            ("Approve legal review", "approve_legal_review"),
-            ("Request more information", "request_information"),
-            ("Reject request", "reject"),
-            ("Escalate", "escalate"),
-        ),
-        DSRRequest.State.RESPONSE_PREP: (
-            ("Approve and close", "approve_and_close"),
-            ("Request more information", "request_information"),
-            ("Escalate", "escalate"),
-        ),
-        DSRRequest.State.ESCALATED: (
-            ("Resume escalated case", "resume_escalated"),
-        ),
-    }
     return render(
         request,
         "dsr/dpo_request.html",
@@ -791,7 +829,7 @@ def dpo_request_detail(request: HttpRequest, pk: int) -> HttpResponse:
             "response_draft": _build_response_draft(dsr),
             "response_versions": dsr.response_versions.select_related("publication").all(),
             "response_signoff_error": _response_signoff_error(dsr),
-            "actions": actions_by_state.get(dsr.state, ()),
+            "actions": TRANSITION_ACTIONS.get(dsr.state, ()),
             "errors": errors,
             "task_statuses": DSRReviewTask.Status.choices,
             "decision_outcomes": DSRDecision.Outcome.choices,
@@ -827,6 +865,18 @@ class MyRequestsView(PatientEndpoint):
         return Response(DSRStatusSerializer(requests, many=True).data)
 
 
+class PatientDSRDetailView(PatientEndpoint):
+    def get(self, request: Request, pk: int) -> Response:
+        principal = self._principal(request)
+        dsr = get_object_or_404(DSRRequest, pk=pk, patient_id=principal.patient_id)
+        return Response(
+            {
+                **DSRStatusSerializer(dsr).data,
+                "can_withdraw": dsr.can_withdraw,
+            }
+        )
+
+
 class DPOPermission:
     @staticmethod
     def check(request: Request) -> None:
@@ -842,6 +892,23 @@ class DPOAPIView(APIView):
         if not isinstance(request.user, SimulatedPrincipal):
             raise PermissionDenied("DPO role is required")
         return request.user.patient_id
+
+
+class DSRCaseDetailView(DPOAPIView):
+    def get(self, request: Request, pk: int) -> Response:
+        self.principal_id(request)
+        dsr = get_object_or_404(DSRRequest, pk=pk)
+        actions = TRANSITION_ACTIONS.get(dsr.state, ())
+        return Response(
+            {
+                "request": DSRStatusSerializer(dsr).data,
+                "activity": _case_activity(dsr),
+                "available_actions": [
+                    {"label": label, "action": action}
+                    for label, action in actions
+                ],
+            }
+        )
 
 
 class DSRAssignmentView(DPOAPIView):

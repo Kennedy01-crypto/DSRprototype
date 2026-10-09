@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   AlertCircle,
   ArrowDownUp,
@@ -38,6 +39,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { DPOQueueResponse, DSRRequest } from "@/lib/types";
+import { RequestPagination, REQUESTS_PER_PAGE } from "@/components/request-pagination";
 
 interface DPOProps {
   principalId: string;
@@ -98,6 +100,7 @@ export function DpoDashboard({ principalId }: DPOProps) {
   const [assignedTo, setAssignedTo] = useState("");
   const [search, setSearch] = useState("");
   const [refresh, setRefresh] = useState(0);
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     let cancelled = false;
@@ -152,6 +155,12 @@ export function DpoDashboard({ principalId }: DPOProps) {
   }, [data, search]);
 
   const requests = data?.requests ?? [];
+  const pageCount = Math.max(1, Math.ceil(visibleRequests.length / REQUESTS_PER_PAGE));
+  const currentPage = Math.min(page, pageCount);
+  const paginatedRequests = visibleRequests.slice(
+    (currentPage - 1) * REQUESTS_PER_PAGE,
+    currentPage * REQUESTS_PER_PAGE,
+  );
   const overdueCount = requests.filter((item) => item.time_remaining_seconds <= 0).length;
   const unassignedCount = requests.filter((item) => !item.assigned_to).length;
   const inReviewCount = requests.filter(
@@ -170,7 +179,7 @@ export function DpoDashboard({ principalId }: DPOProps) {
               Request queue
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Review workload, identify cases needing attention, and open the existing case workflow when needed.
+              Review workload, identify cases needing attention, and manage each request through its case workspace.
             </p>
           </div>
           <Button variant="outline" onClick={() => { setLoading(true); setRefresh((current) => current + 1); }} className="gap-2 self-start sm:self-auto">
@@ -206,14 +215,17 @@ export function DpoDashboard({ principalId }: DPOProps) {
                 <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={search}
-                  onChange={(event) => setSearch(event.target.value)}
+                  onChange={(event) => {
+                    setSearch(event.target.value);
+                    setPage(1);
+                  }}
                   placeholder="Search by reference, type, department…"
                   className="h-10 pl-9"
                 />
               </label>
-              <FilterSelect label="Status" value={state} options={states} onChange={setState} />
-              <FilterSelect label="Request type" value={requestType} options={requestTypes} onChange={setRequestType} />
-              <FilterSelect label="Queue" value={queue} options={queues} onChange={setQueue} />
+              <FilterSelect label="Status" value={state} options={states} onChange={(value) => { setState(value); setPage(1); }} />
+              <FilterSelect label="Request type" value={requestType} options={requestTypes} onChange={(value) => { setRequestType(value); setPage(1); }} />
+              <FilterSelect label="Queue" value={queue} options={queues} onChange={(value) => { setQueue(value); setPage(1); }} />
             </div>
             <div className="grid gap-3 md:grid-cols-[1fr_auto]">
               <label className="relative">
@@ -221,7 +233,10 @@ export function DpoDashboard({ principalId }: DPOProps) {
                 <CircleUserRound className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={assignedTo}
-                  onChange={(event) => setAssignedTo(event.target.value)}
+                  onChange={(event) => {
+                    setAssignedTo(event.target.value);
+                    setPage(1);
+                  }}
                   placeholder="Filter by assigned staff ID"
                   className="h-10 pl-9"
                 />
@@ -260,6 +275,7 @@ export function DpoDashboard({ principalId }: DPOProps) {
                     setQueue("");
                     setAssignedTo("");
                     setSearch("");
+                    setPage(1);
                   }}
                 >
                   Clear filters
@@ -270,24 +286,37 @@ export function DpoDashboard({ principalId }: DPOProps) {
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-muted/55 hover:bg-muted/55">
+                      <TableHead className="w-12">#</TableHead>
                       <TableHead>Request</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Department / reviewer</TableHead>
                       <TableHead>Submitted</TableHead>
                       <TableHead>Response target</TableHead>
-                      <TableHead className="text-right">Reference</TableHead>
+                      <TableHead>Reference</TableHead>
+                      <TableHead className="text-right">Action</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {visibleRequests.map((item) => (
-                      <QueueRow key={item.id} item={item} />
+                    {paginatedRequests.map((item, index) => (
+                      <QueueRow
+                        key={item.id}
+                        item={item}
+                        number={(currentPage - 1) * REQUESTS_PER_PAGE + index + 1}
+                      />
                     ))}
                   </TableBody>
                 </Table>
               </div>
             )}
+            {!loading && data && visibleRequests.length > 0 && (
+              <RequestPagination
+                page={currentPage}
+                totalItems={visibleRequests.length}
+                onPageChange={setPage}
+              />
+            )}
             <p className="text-xs text-muted-foreground">
-              Showing {visibleRequests.length} of {requests.length} loaded cases. Case-level actions remain in the existing DPO workspace for this first UI phase.
+              Showing {paginatedRequests.length} of {visibleRequests.length} matching requests ({requests.length} loaded). Open a request to review its details, assignment, workflow actions, and activity.
             </p>
           </CardContent>
         </Card>
@@ -323,12 +352,18 @@ function FilterSelect({
   );
 }
 
-function QueueRow({ item }: { item: DSRRequest }) {
+function QueueRow({ item, number }: { item: DSRRequest; number: number }) {
   const overdue = item.time_remaining_seconds <= 0 && item.closed_at === null;
   return (
     <TableRow>
+      <TableCell className="font-mono text-xs text-muted-foreground">{number}</TableCell>
       <TableCell className="min-w-[210px]">
-        <p className="font-semibold text-foreground">DSR-{item.id} · {item.request_type}</p>
+        <Link
+          href={`/dpo/requests/${item.id}`}
+          className="font-semibold text-primary hover:underline focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2"
+        >
+          DSR-{item.id} · {item.request_type}
+        </Link>
         <p className="mt-1 line-clamp-2 max-w-[320px] text-xs leading-5 text-muted-foreground">{item.description}</p>
       </TableCell>
       <TableCell>
@@ -345,7 +380,17 @@ function QueueRow({ item }: { item: DSRRequest }) {
           {overdue ? "Overdue" : "Within target"}
         </p>
       </TableCell>
-      <TableCell className="text-right font-mono text-xs text-muted-foreground">DSR-{item.id}</TableCell>
+      <TableCell className="font-mono text-xs text-muted-foreground">
+        DSR-{item.id}
+      </TableCell>
+      <TableCell className="text-right">
+        <Link
+          href={`/dpo/requests/${item.id}`}
+          className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-background px-3 text-sm font-medium hover:bg-muted"
+        >
+          View
+        </Link>
+      </TableCell>
     </TableRow>
   );
 }

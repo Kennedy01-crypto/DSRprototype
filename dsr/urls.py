@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     DSRAssignmentView,
+    DSRCaseDetailView,
     DSRCommunicationView,
     DSRConsoleView,
     DSRDecisionListView,
@@ -17,6 +18,7 @@ from .views import (
     DSRWithdrawalView,
     MyRequestsView,
     PatientCommunicationView,
+    PatientDSRDetailView,
     PatientPublishedResponsesView,
     SubmitDSRView,
     demo_login,
@@ -36,6 +38,11 @@ urlpatterns = [
     path("dpo/", dpo_home, name="dpo-home"),
     path("dpo/export/", dpo_export, name="dpo-export"),
     path("dpo/requests/<int:pk>/", dpo_request_detail, name="dpo-request"),
+    path(
+        "api/v1/dpo/dsrs/<int:pk>/",
+        DSRCaseDetailView.as_view(),
+        name="dpo-dsr-detail",
+    ),
     path(
         "api/v1/dpo/dsrs/<int:pk>/assignment/",
         DSRAssignmentView.as_view(),
@@ -98,6 +105,11 @@ urlpatterns = [
     ),
     path("api/v1/dsrs/submit/", SubmitDSRView.as_view(), name="dsr-submit"),
     path("api/v1/dsrs/my-requests/", MyRequestsView.as_view(), name="dsr-my-requests"),
+    path(
+        "api/v1/dsrs/<int:pk>/",
+        PatientDSRDetailView.as_view(),
+        name="dsr-detail",
+    ),
     path(
         "api/v1/dsrs/<int:pk>/withdraw/",
         DSRWithdrawalView.as_view(),

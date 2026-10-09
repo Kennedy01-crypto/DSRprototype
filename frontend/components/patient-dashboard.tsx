@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import Link from "next/link";
 import {
   ArrowRight,
-  CalendarDays,
   CheckCircle2,
   CircleHelp,
   Clock3,
@@ -30,6 +30,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { RequestPagination, REQUESTS_PER_PAGE } from "@/components/request-pagination";
 import type { DSRRequest } from "@/lib/types";
 
 interface PatientProps {
@@ -68,6 +77,7 @@ export function PatientDashboard({ principalId }: PatientProps) {
   const [submitting, setSubmitting] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     let cancelled = false;
@@ -114,6 +124,12 @@ export function PatientDashboard({ principalId }: PatientProps) {
     (item) => item.state === "Waiting for Subject Information",
   ).length;
   const completedCount = (requests ?? []).filter((item) => item.closed_at !== null).length;
+  const pageCount = Math.max(1, Math.ceil(visibleRequests.length / REQUESTS_PER_PAGE));
+  const currentPage = Math.min(page, pageCount);
+  const paginatedRequests = visibleRequests.slice(
+    (currentPage - 1) * REQUESTS_PER_PAGE,
+    currentPage * REQUESTS_PER_PAGE,
+  );
 
   async function submitRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -180,10 +196,18 @@ export function PatientDashboard({ principalId }: PatientProps) {
               <label className="relative sm:w-56">
                 <span className="sr-only">Search your requests</span>
                 <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find a request…" className="h-9 pl-9" />
+                <Input
+                  value={search}
+                  onChange={(event) => {
+                    setSearch(event.target.value);
+                    setPage(1);
+                  }}
+                  placeholder="Find a request…"
+                  className="h-9 pl-9"
+                />
               </label>
             </CardHeader>
-            <CardContent className="space-y-3 pt-5">
+            <CardContent className="space-y-4 pt-5">
               {loading ? (
                 <div className="space-y-3">
                   <Skeleton className="h-28 w-full" />
@@ -204,9 +228,39 @@ export function PatientDashboard({ principalId }: PatientProps) {
                   </p>
                 </div>
               ) : (
-                visibleRequests.map((item) => (
-                  <RequestCard key={item.id} item={item} />
-                ))
+                <>
+                  <div className="overflow-hidden rounded-xl border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-muted/55 hover:bg-muted/55">
+                          <TableHead className="w-12">#</TableHead>
+                          <TableHead>Request</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Submitted</TableHead>
+                          <TableHead>Response target</TableHead>
+                          <TableHead className="text-right">Action</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {paginatedRequests.map((item, index) => (
+                          <PatientRequestRow
+                            key={item.id}
+                            item={item}
+                            number={(currentPage - 1) * REQUESTS_PER_PAGE + index + 1}
+                          />
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  <RequestPagination
+                    page={currentPage}
+                    totalItems={visibleRequests.length}
+                    onPageChange={setPage}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Showing {paginatedRequests.length} of {visibleRequests.length} matching requests.
+                  </p>
+                </>
               )}
             </CardContent>
           </Card>
@@ -273,30 +327,44 @@ export function PatientDashboard({ principalId }: PatientProps) {
   );
 }
 
-function RequestCard({ item }: { item: DSRRequest }) {
+function PatientRequestRow({ item, number }: { item: DSRRequest; number: number }) {
   const overdue = item.time_remaining_seconds <= 0 && item.closed_at === null;
   return (
-    <article className="rounded-xl border bg-white p-4 transition hover:border-primary/30 hover:shadow-sm sm:p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold">DSR-{item.id} · {item.request_type}</p>
-          <p className="mt-1 line-clamp-2 text-sm leading-5 text-muted-foreground">{item.description}</p>
-        </div>
+    <TableRow>
+      <TableCell className="font-mono text-xs text-muted-foreground">{number}</TableCell>
+      <TableCell className="min-w-[220px]">
+        <p className="font-semibold">DSR-{item.id} · {item.request_type}</p>
+        <p className="mt-1 line-clamp-2 max-w-[360px] text-xs leading-5 text-muted-foreground">
+          {item.description}
+        </p>
+        {item.closed_at && (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Resolution: {item.resolution_status}
+          </p>
+        )}
+      </TableCell>
+      <TableCell>
         <Badge variant={badgeVariant(item.state)}>{item.state}</Badge>
-      </div>
-      <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 border-t pt-3 text-xs text-muted-foreground">
-        <span className={`inline-flex items-center gap-1.5 ${overdue ? "font-medium text-rose-700" : ""}`}>
-          <CalendarDays className="size-3.5" />
-          Target {formatDate(item.response_due_at)}{overdue ? " · overdue" : ""}
-        </span>
-        <span>Submitted {formatDate(item.submitted_at)}</span>
-      </div>
-      {item.closed_at && (
-        <div className="mt-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">
-          <CheckCircle2 className="size-4" />
-          Request closed · {item.resolution_status}
-        </div>
-      )}
-    </article>
+      </TableCell>
+      <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+        {formatDate(item.submitted_at)}
+      </TableCell>
+      <TableCell className="whitespace-nowrap">
+        <p className={`text-sm font-medium ${overdue ? "text-rose-700" : ""}`}>
+          {formatDate(item.response_due_at)}
+        </p>
+        <p className={`mt-1 text-xs ${overdue ? "text-rose-700" : "text-muted-foreground"}`}>
+          {overdue ? "Overdue" : "Within target"}
+        </p>
+      </TableCell>
+      <TableCell className="text-right">
+        <Link
+          href={`/patient/requests/${item.id}`}
+          className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-background px-3 text-sm font-medium hover:bg-muted"
+        >
+          View
+        </Link>
+      </TableCell>
+    </TableRow>
   );
 }

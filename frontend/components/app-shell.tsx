@@ -1,11 +1,14 @@
 "use client";
 
+import { useSyncExternalStore } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   Activity,
   Bell,
   ClipboardList,
+  ChevronLeft,
+  ChevronRight,
   FileText,
   HeartPulse,
   LogOut,
@@ -33,10 +36,40 @@ const navItems = {
   ],
 };
 
+const SIDEBAR_STORAGE_KEY = "dsr-sidebar-expanded";
+const SIDEBAR_CHANGE_EVENT = "dsr-sidebar-preference-change";
+
+function subscribeSidebar(listener: () => void) {
+  window.addEventListener("storage", listener);
+  window.addEventListener(SIDEBAR_CHANGE_EVENT, listener);
+  return () => {
+    window.removeEventListener("storage", listener);
+    window.removeEventListener(SIDEBAR_CHANGE_EVENT, listener);
+  };
+}
+
+function getSidebarExpanded(): boolean {
+  return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) !== "false";
+}
+
+function getServerSidebarExpanded(): boolean {
+  return true;
+}
+
+function updateSidebarExpanded(expanded: boolean) {
+  window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(expanded));
+  window.dispatchEvent(new Event(SIDEBAR_CHANGE_EVENT));
+}
+
 export function AppShell({ role, principalId, children }: AppShellProps) {
   const pathname = usePathname();
   const router = useRouter();
   const dpo = role === "dpo";
+  const sidebarExpanded = useSyncExternalStore(
+    subscribeSidebar,
+    getSidebarExpanded,
+    getServerSidebarExpanded,
+  );
 
   async function signOut() {
     const response = await fetch("/api/session", { method: "DELETE" });
@@ -51,58 +84,76 @@ export function AppShell({ role, principalId, children }: AppShellProps) {
 
   return (
     <div className="min-h-screen bg-background">
-      <aside className="fixed inset-y-0 left-0 z-20 hidden w-[258px] flex-col bg-sidebar text-sidebar-foreground lg:flex">
-        <div className="flex h-[76px] items-center gap-3 px-6">
+      <aside
+        className={`fixed inset-y-0 left-0 z-20 hidden flex-col bg-sidebar text-sidebar-foreground transition-[width] duration-200 lg:flex ${
+          sidebarExpanded ? "w-[258px]" : "w-[76px]"
+        }`}
+      >
+        <div className={`flex h-[76px] items-center gap-3 ${sidebarExpanded ? "px-6" : "justify-center px-2"}`}>
           <div className="flex size-10 items-center justify-center rounded-xl bg-sidebar-primary text-sidebar-primary-foreground">
             <HeartPulse className="size-5" />
           </div>
-          <div>
+          {sidebarExpanded && <div>
             <p className="text-sm font-semibold tracking-wide">AAR HEALTHCARE</p>
             <p className="text-xs text-sidebar-foreground/60">Privacy operations</p>
-          </div>
+          </div>}
         </div>
         <Separator className="bg-sidebar-border" />
-        <div className="px-4 pt-6">
-          <p className="px-3 pb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-sidebar-foreground/50">
-            Workspace
-          </p>
+        <div className={`pt-6 ${sidebarExpanded ? "px-4" : "px-2"}`}>
+          {sidebarExpanded && (
+            <p className="px-3 pb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-sidebar-foreground/50">
+              Workspace
+            </p>
+          )}
           <nav aria-label="Main navigation" className="space-y-1">
             {navItems[role].map(({ label, href, icon: Icon }) => {
-              const active = pathname === href;
+              const active = pathname === href || pathname.startsWith(`${href}/`);
               return (
                 <Link
                   key={href}
                   href={href}
                   aria-current={active ? "page" : undefined}
+                  aria-label={sidebarExpanded ? undefined : label}
+                  title={sidebarExpanded ? undefined : label}
                   className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
                     active
                       ? "bg-sidebar-accent text-sidebar-accent-foreground"
                       : "text-sidebar-foreground/75 hover:bg-sidebar-accent/70 hover:text-sidebar-foreground"
-                  }`}
+                  } ${sidebarExpanded ? "" : "justify-center px-0"}`}
                 >
                   <Icon className="size-[17px]" />
-                  {label}
+                  {sidebarExpanded && label}
                 </Link>
               );
             })}
           </nav>
         </div>
         {dpo && (
-          <div className="mt-auto px-4 pb-5">
+          <div className={`mt-auto pb-5 ${sidebarExpanded ? "px-4" : "px-2"}`}>
             <div className="rounded-xl border border-sidebar-border bg-white/5 p-4">
-              <div className="mb-2 flex items-center gap-2 text-sidebar-primary">
+              <div className={`mb-2 flex items-center gap-2 text-sidebar-primary ${sidebarExpanded ? "" : "justify-center"}`}>
                 <ShieldCheck className="size-4" />
-                <span className="text-xs font-semibold">Prototype environment</span>
+                {sidebarExpanded && <span className="text-xs font-semibold">Prototype environment</span>}
               </div>
-              <p className="text-xs leading-5 text-sidebar-foreground/65">
+              {sidebarExpanded && <p className="text-xs leading-5 text-sidebar-foreground/65">
                 Mock workflow only. No source systems or real patient records.
-              </p>
+              </p>}
             </div>
           </div>
         )}
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={sidebarExpanded ? "Collapse sidebar" : "Expand sidebar"}
+          title={sidebarExpanded ? "Collapse sidebar" : "Expand sidebar"}
+          onClick={() => updateSidebarExpanded(!sidebarExpanded)}
+          className="absolute right-[-14px] top-[88px] z-30 size-7 rounded-full border border-sidebar-border bg-sidebar text-sidebar-foreground shadow-md hover:bg-sidebar-accent"
+        >
+          {sidebarExpanded ? <ChevronLeft className="size-4" /> : <ChevronRight className="size-4" />}
+        </Button>
       </aside>
 
-      <div className="lg:pl-[258px]">
+      <div className={`transition-[padding] duration-200 ${sidebarExpanded ? "lg:pl-[258px]" : "lg:pl-[76px]"}`}>
         <header className="sticky top-0 z-10 flex h-[68px] items-center justify-between border-b bg-white/90 px-4 backdrop-blur md:px-8">
           <div className="flex items-center gap-3">
             <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary lg:hidden">
