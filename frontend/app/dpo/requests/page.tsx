@@ -21,6 +21,7 @@ export default async function DpoQueuePage({
         state: typeof params.state === "string" ? params.state : "",
         queue: typeof params.queue === "string" ? params.queue : "",
         department: typeof params.department === "string" ? params.department : "",
+        assignedTo: typeof params.assigned_to === "string" ? params.assigned_to : "",
       }}
     />
   );

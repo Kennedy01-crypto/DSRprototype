@@ -15,6 +15,7 @@ import {
   Search,
   ShieldAlert,
   UsersRound,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -41,6 +42,8 @@ import {
 } from "@/components/ui/table";
 import type { DPOQueueResponse, DSRRequest } from "@/lib/types";
 import { RequestPagination, REQUESTS_PER_PAGE } from "@/components/request-pagination";
+import { formatSlaDue } from "@/lib/format-sla";
+import { useCurrentTime } from "@/hooks/use-current-time";
 
 interface DPOProps {
   principalId: string;
@@ -48,6 +51,7 @@ interface DPOProps {
     state: string;
     queue: string;
     department: string;
+    assignedTo?: string;
   };
 }
 
@@ -83,6 +87,13 @@ const queues = [
   ["escalated", "Escalated"],
 ];
 
+const queuePresets = [
+  { value: "mine", label: "Assigned to me" },
+  { value: "overdue", label: "Overdue" },
+  { value: "unassigned", label: "Unassigned" },
+  { value: "waiting", label: "Waiting for patient" },
+] as const;
+
 function statusVariant(state: string): "default" | "secondary" | "destructive" | "outline" {
   if (state === "Escalated" || state === "Rejected") return "destructive";
   if (state === "Closed") return "secondary";
@@ -108,14 +119,16 @@ export function DpoDashboard({
   const [requestType, setRequestType] = useState("");
   const [queue, setQueue] = useState(initialFilters.queue);
   const [department, setDepartment] = useState(initialFilters.department);
-  const [assignedTo, setAssignedTo] = useState("");
+  const [assignedTo, setAssignedTo] = useState(initialFilters.assignedTo ?? "");
   const [search, setSearch] = useState("");
   const [refresh, setRefresh] = useState(0);
   const [page, setPage] = useState(1);
+  const currentTime = useCurrentTime();
 
   useEffect(() => {
     let cancelled = false;
     async function loadRequests() {
+    setLoading(true);
     const params = new URLSearchParams();
     if (state) params.set("state", state);
     if (requestType) params.set("type", requestType);
@@ -155,6 +168,7 @@ export function DpoDashboard({
     return requests.filter((item) =>
       [
         item.id.toString(),
+        `dsr-${item.id}`,
         item.description,
         item.department,
         item.assigned_to,
@@ -173,11 +187,53 @@ export function DpoDashboard({
     (currentPage - 1) * REQUESTS_PER_PAGE,
     currentPage * REQUESTS_PER_PAGE,
   );
-  const overdueCount = requests.filter((item) => item.time_remaining_seconds <= 0).length;
-  const unassignedCount = requests.filter((item) => !item.assigned_to).length;
+  const overdueCount = requests.filter(
+    (item) =>
+      !["Closed", "Rejected", "Withdrawn"].includes(item.state) &&
+      item.closed_at === null &&
+      (currentTime === null
+        ? item.time_remaining_seconds <= 0
+        : new Date(item.response_due_at).getTime() <= currentTime),
+  ).length;
+  const unassignedCount = requests.filter(
+    (item) =>
+      !item.assigned_to &&
+      item.closed_at === null &&
+      !["Closed", "Rejected", "Withdrawn"].includes(item.state),
+  ).length;
   const inReviewCount = requests.filter(
     (item) => item.state === "Privacy Review" || item.state === "Legal / Management Review",
   ).length;
+  const activeFilters = [
+    ...(search.trim() ? [{ label: `Search: ${search.trim()}`, clear: () => { setSearch(""); setPage(1); } }] : []),
+    ...(state ? [{ label: `Status: ${states.find(([value]) => value === state)?.[1] ?? state}`, clear: () => { setState(""); setPage(1); } }] : []),
+    ...(requestType ? [{ label: `Type: ${requestTypes.find(([value]) => value === requestType)?.[1] ?? requestType}`, clear: () => { setRequestType(""); setPage(1); } }] : []),
+    ...(queue ? [{ label: `Queue: ${queues.find(([value]) => value === queue)?.[1] ?? queue}`, clear: () => { setQueue(""); setPage(1); } }] : []),
+    ...(department.trim() ? [{ label: `Department: ${department.trim()}`, clear: () => { setDepartment(""); setPage(1); } }] : []),
+    ...(assignedTo.trim() ? [{ label: `Reviewer: ${assignedTo.trim()}`, clear: () => { setAssignedTo(""); setPage(1); } }] : []),
+  ];
+
+  function applyPreset(preset: "mine" | "overdue" | "unassigned" | "waiting") {
+    setState(preset === "waiting" ? "NEEDS_INFORMATION" : "");
+    setRequestType("");
+    setQueue(
+      preset === "overdue" || preset === "unassigned" ? preset : "",
+    );
+    setAssignedTo(preset === "mine" ? principalId : "");
+    setDepartment("");
+    setSearch("");
+    setPage(1);
+  }
+
+  function clearFilters() {
+    setState("");
+    setRequestType("");
+    setQueue("");
+    setDepartment("");
+    setAssignedTo("");
+    setSearch("");
+    setPage(1);
+  }
 
   return (
     <AppShell role="dpo" principalId={principalId}>
@@ -207,6 +263,21 @@ export function DpoDashboard({
           <StatCard label="In review" value={loading ? "—" : inReviewCount} note="Privacy or legal review" icon={CheckCircle2} accent="blue" />
         </div>
 
+        <section aria-label="Quick queue views" className="flex flex-wrap items-center gap-2">
+          <span className="mr-1 text-sm font-medium">Quick views:</span>
+          {queuePresets.map(({ value, label }) => (
+            <Button
+              key={value}
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => applyPreset(value)}
+            >
+              {label}
+            </Button>
+          ))}
+        </section>
+
         <Card className="border-0 shadow-sm ring-1 ring-border/80">
           <CardHeader className="gap-3 border-b pb-5 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -231,7 +302,7 @@ export function DpoDashboard({
                     setSearch(event.target.value);
                     setPage(1);
                   }}
-                  placeholder="Search by reference, type, department…"
+                  placeholder="Search ID, type, department, reviewer…"
                   className="h-10 pl-9"
                 />
               </label>
@@ -272,6 +343,27 @@ export function DpoDashboard({
               </Button>
             </div>
 
+            {activeFilters.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2" aria-label="Active filters">
+                <span className="text-xs font-medium text-muted-foreground">Active filters:</span>
+                {activeFilters.map((filter) => (
+                  <button
+                    key={filter.label}
+                    type="button"
+                    onClick={filter.clear}
+                    className="inline-flex min-h-8 items-center gap-1 rounded-full border bg-background px-3 text-xs hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                    aria-label={`Remove ${filter.label} filter`}
+                  >
+                    {filter.label}
+                    <X aria-hidden="true" className="size-3.5" />
+                  </button>
+                ))}
+                <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>
+                  Reset all
+                </Button>
+              </div>
+            )}
+
             {loading ? (
               <div className="space-y-3 py-2">
                 <Skeleton className="h-11 w-full" />
@@ -288,28 +380,30 @@ export function DpoDashboard({
             ) : visibleRequests.length === 0 ? (
               <div className="flex flex-col items-center rounded-xl border border-dashed py-12 text-center">
                 <ListFilter className="mb-3 size-8 text-muted-foreground" />
-                <p className="font-medium">No cases match these filters</p>
-                <p className="mt-1 text-sm text-muted-foreground">Clear a filter or try a different search.</p>
-                <Button
-                  variant="outline"
-                  className="mt-4"
-                  onClick={() => {
-                    setLoading(true);
-                    setState("");
-                    setRequestType("");
-                    setQueue("");
-                    setDepartment("");
-                    setAssignedTo("");
-                    setSearch("");
-                    setPage(1);
-                  }}
-                >
-                  Clear filters
-                </Button>
+                <p className="font-medium">
+                  {requests.length === 0 && activeFilters.length === 0
+                    ? "No requests have been submitted yet"
+                    : "No cases match these filters"}
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {requests.length === 0 && activeFilters.length === 0
+                    ? "New requests will appear here."
+                    : "Remove a filter or try a different search."}
+                </p>
+                {activeFilters.length > 0 && (
+                  <Button variant="outline" className="mt-4" onClick={clearFilters}>
+                    Clear filters
+                  </Button>
+                )}
               </div>
             ) : (
-              <div className="overflow-hidden rounded-xl border">
-                <Table>
+              <div
+                role="region"
+                aria-label="Request queue results"
+                tabIndex={0}
+                className="overflow-x-auto rounded-xl border focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              >
+                <Table className="min-w-[900px]">
                   <TableHeader>
                     <TableRow className="bg-muted/55 hover:bg-muted/55">
                       <TableHead className="w-12">#</TableHead>
@@ -327,6 +421,7 @@ export function DpoDashboard({
                       <QueueRow
                         key={item.id}
                         item={item}
+                        currentTime={currentTime}
                         number={(currentPage - 1) * REQUESTS_PER_PAGE + index + 1}
                       />
                     ))}
@@ -341,7 +436,7 @@ export function DpoDashboard({
                 onPageChange={setPage}
               />
             )}
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-muted-foreground" aria-live="polite">
               Showing {paginatedRequests.length} of {visibleRequests.length} matching requests ({requests.length} loaded). Open a request to review its details, assignment, workflow actions, and activity.
             </p>
           </CardContent>
@@ -378,8 +473,30 @@ function FilterSelect({
   );
 }
 
-function QueueRow({ item, number }: { item: DSRRequest; number: number }) {
-  const overdue = item.time_remaining_seconds <= 0 && item.closed_at === null;
+function QueueRow({
+  item,
+  number,
+  currentTime,
+}: {
+  item: DSRRequest;
+  number: number;
+  currentTime: number | null;
+}) {
+  const overdue =
+    (currentTime === null
+      ? item.time_remaining_seconds <= 0
+      : new Date(item.response_due_at).getTime() <= currentTime) &&
+    item.closed_at === null &&
+    !["Closed", "Rejected", "Withdrawn"].includes(item.state);
+  const slaLabel =
+    item.closed_at === null &&
+    !["Closed", "Rejected", "Withdrawn"].includes(item.state)
+      ? formatSlaDue(
+          item.response_due_at,
+          currentTime,
+          item.time_remaining_seconds,
+        )
+      : "Target date";
   return (
     <TableRow>
       <TableCell className="font-mono text-xs text-muted-foreground">{number}</TableCell>
@@ -402,8 +519,8 @@ function QueueRow({ item, number }: { item: DSRRequest; number: number }) {
       <TableCell className="whitespace-nowrap text-sm text-muted-foreground">{formatDate(item.submitted_at)}</TableCell>
       <TableCell className="whitespace-nowrap">
         <p className={`text-sm font-medium ${overdue ? "text-rose-700" : ""}`}>{formatDate(item.response_due_at)}</p>
-        <p className={`mt-1 text-xs ${overdue ? "text-rose-700" : "text-muted-foreground"}`}>
-          {overdue ? "Overdue" : "Within target"}
+        <p className={`mt-1 text-xs ${overdue ? "font-medium text-rose-700" : "text-muted-foreground"}`}>
+          {slaLabel}
         </p>
       </TableCell>
       <TableCell className="font-mono text-xs text-muted-foreground">

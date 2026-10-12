@@ -16,6 +16,7 @@ import {
 import { toast } from "sonner";
 
 import { AppShell } from "@/components/app-shell";
+import { RequestProgress } from "@/components/request-progress";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,6 +28,8 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { formatSlaDue } from "@/lib/format-sla";
+import { useCurrentTime } from "@/hooks/use-current-time";
 import type { PatientRequestDetailResponse } from "@/lib/types";
 
 function badgeVariant(
@@ -73,6 +76,7 @@ export function PatientRequestDetail({
   const [withdrawing, setWithdrawing] = useState(false);
   const [reply, setReply] = useState("");
   const [sendingReply, setSendingReply] = useState(false);
+  const currentTime = useCurrentTime();
 
   const loadRequest = useCallback(async () => {
     setLoadError("");
@@ -111,6 +115,7 @@ export function PatientRequestDetail({
 
   async function withdrawRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!window.confirm("Withdraw this request? It will no longer continue through processing.")) return;
     setWithdrawing(true);
     try {
       const response = await fetch(`/api/requests/${id}`, {
@@ -135,7 +140,10 @@ export function PatientRequestDetail({
   }
 
   const overdue =
-    !!data && data.time_remaining_seconds <= 0 && data.closed_at === null;
+    !!data &&
+    data.time_remaining_seconds <= 0 &&
+    data.closed_at === null &&
+    !["Closed", "Rejected", "Withdrawn"].includes(data.state);
 
   return (
     <AppShell role="patient" principalId={principalId}>
@@ -179,6 +187,9 @@ export function PatientRequestDetail({
           </Card>
         ) : (
           <>
+            {!communicationsOnly && (
+              <RequestProgress state={data.state} audience="patient" />
+            )}
             <Card className="border-0 shadow-sm ring-1 ring-border/80">
               <CardContent className="flex flex-col justify-between gap-5 pt-6 sm:flex-row sm:items-start">
                 <div>
@@ -229,7 +240,10 @@ export function PatientRequestDetail({
                       </dt>
                       <dd className={`mt-1 text-sm font-medium ${overdue ? "text-rose-700" : ""}`}>
                         {formatDate(data.response_due_at)}
-                        {overdue ? " · Overdue" : ""}
+                        {data.closed_at === null &&
+                        !["Closed", "Rejected", "Withdrawn"].includes(data.state)
+                          ? ` · ${formatSlaDue(data.response_due_at, currentTime, data.time_remaining_seconds)}`
+                          : " · Target date"}
                       </dd>
                     </div>
                   </dl>

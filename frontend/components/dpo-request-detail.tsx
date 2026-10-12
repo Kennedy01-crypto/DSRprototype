@@ -17,6 +17,7 @@ import {
 import { toast } from "sonner";
 
 import { AppShell } from "@/components/app-shell";
+import { RequestProgress } from "@/components/request-progress";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,6 +30,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { formatSlaDue } from "@/lib/format-sla";
+import { useCurrentTime } from "@/hooks/use-current-time";
 import type { DSRCaseDetailResponse } from "@/lib/types";
 
 const requiredReasonActions = new Set([
@@ -88,8 +91,9 @@ export function DpoRequestDetail({
   const [message, setMessage] = useState("");
   const [sendingMessage, setSendingMessage] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const currentTime = useCurrentTime();
 
-  const loadCase = useCallback(async (showLoading = true) => {
+  const loadCase = useCallback(async (showLoading = true): Promise<DSRCaseDetailResponse | null> => {
     if (showLoading) setLoading(true);
     setLoadError("");
     try {
@@ -101,11 +105,13 @@ export function DpoRequestDetail({
           ? current
           : body.available_actions[0]?.action ?? "",
       );
+      return body;
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Could not load this request.";
       setLoadError(message);
       if (!showLoading) toast.error(message);
+      return null;
     } finally {
       setLoading(false);
     }
@@ -143,6 +149,14 @@ export function DpoRequestDetail({
     successMessage: string,
   ) {
     event.preventDefault();
+    if (method === "PATCH" && assignedTo.trim() !== data?.request.assigned_to) {
+      const target = assignedTo.trim() || "unassigned";
+      if (!window.confirm(`Change the assigned reviewer to ${target}?`)) return;
+    }
+    if (method === "POST") {
+      const actionLabel = selectedAction?.label ?? "this workflow action";
+      if (!window.confirm(`Apply “${actionLabel}” to DSR-${id}?`)) return;
+    }
     setSaving(true);
     try {
       const response = await fetch(`/api/requests/${id}`, {
@@ -154,8 +168,14 @@ export function DpoRequestDetail({
       if (!response.ok) {
         throw new Error(body.detail ?? "The request could not be updated.");
       }
-      toast.success(successMessage);
-      await loadCase(false);
+      const refreshedCase = await loadCase(false);
+      toast.success(
+        method === "POST"
+          ? refreshedCase
+            ? `Request status updated to ${refreshedCase.request.state}.`
+            : "Workflow action applied."
+          : successMessage,
+      );
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "The request could not be updated.",
@@ -200,7 +220,8 @@ export function DpoRequestDetail({
   const overdue =
     !!data &&
     data.request.time_remaining_seconds <= 0 &&
-    data.request.closed_at === null;
+    data.request.closed_at === null &&
+    !["Closed", "Rejected", "Withdrawn"].includes(data.request.state);
 
   return (
     <AppShell role="dpo" principalId={principalId}>
@@ -234,6 +255,7 @@ export function DpoRequestDetail({
           </Card>
         ) : (
           <>
+            <RequestProgress state={data.request.state} audience="dpo" />
             <Card className="border-0 shadow-sm ring-1 ring-border/80">
               <CardContent className="flex flex-col justify-between gap-5 pt-6 sm:flex-row sm:items-start">
                 <div>
@@ -291,7 +313,10 @@ export function DpoRequestDetail({
                       </dt>
                       <dd className={`mt-1 text-sm font-medium ${overdue ? "text-rose-700" : ""}`}>
                         {formatDate(data.request.response_due_at)}
-                        {overdue ? " · Overdue" : ""}
+                        {data.request.closed_at === null &&
+                        !["Closed", "Rejected", "Withdrawn"].includes(data.request.state)
+                          ? ` · ${formatSlaDue(data.request.response_due_at, currentTime, data.request.time_remaining_seconds)}`
+                          : " · Target date"}
                       </dd>
                     </div>
                   </dl>

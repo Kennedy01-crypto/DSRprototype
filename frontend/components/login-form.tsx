@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { ArrowRight, HeartPulse, LockKeyhole, ShieldCheck } from "lucide-react";
+import { ArrowRight, LockKeyhole, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -47,9 +48,14 @@ export function LoginForm() {
         <div className="absolute -right-32 -top-32 size-[520px] rounded-full border border-white/10" />
         <div className="absolute -right-12 -top-12 size-[280px] rounded-full border border-white/10" />
         <div className="relative flex items-center gap-3">
-          <div className="flex size-11 items-center justify-center rounded-xl bg-[#b9e1d0] text-[#173e4d]">
-            <HeartPulse className="size-6" />
-          </div>
+          <Image
+            src="/aar_logo.png"
+            alt=""
+            width={463}
+            height={479}
+            sizes="44px"
+            className="size-11 rounded-xl object-contain"
+          />
           <div>
             <p className="text-sm font-semibold tracking-[0.12em]">AAR HEALTHCARE</p>
             <p className="text-xs text-white/60">Privacy operations</p>
@@ -80,9 +86,14 @@ export function LoginForm() {
       <section className="flex items-center justify-center px-5 py-12 sm:px-8">
         <div className="w-full max-w-[440px]">
           <div className="mb-8 flex items-center gap-3 lg:hidden">
-            <div className="flex size-10 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-              <HeartPulse className="size-5" />
-            </div>
+            <Image
+              src="/aar_logo.png"
+              alt=""
+              width={463}
+              height={479}
+              sizes="40px"
+              className="size-10 rounded-xl object-contain"
+            />
             <div>
               <p className="text-sm font-semibold">AAR Healthcare</p>
               <p className="text-xs text-muted-foreground">Privacy operations</p>

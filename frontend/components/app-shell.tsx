@@ -1,6 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -11,7 +12,6 @@ import {
   ChevronRight,
   LayoutDashboard,
   FileText,
-  HeartPulse,
   LogOut,
   Plus,
   ShieldCheck,
@@ -92,9 +92,14 @@ export function AppShell({ role, principalId, children }: AppShellProps) {
         }`}
       >
         <div className={`flex h-[76px] items-center gap-3 ${sidebarExpanded ? "px-6" : "justify-center px-2"}`}>
-          <div className="flex size-10 items-center justify-center rounded-xl bg-sidebar-primary text-sidebar-primary-foreground">
-            <HeartPulse className="size-5" />
-          </div>
+          <Image
+            src="/aar_logo.png"
+            alt=""
+            width={463}
+            height={479}
+            sizes="40px"
+            className="size-10 rounded-xl object-contain"
+          />
           {sidebarExpanded && <div>
             <p className="text-sm font-semibold tracking-wide">AAR HEALTHCARE</p>
             <p className="text-xs text-sidebar-foreground/60">Privacy operations</p>
@@ -158,9 +163,14 @@ export function AppShell({ role, principalId, children }: AppShellProps) {
       <div className={`transition-[padding] duration-200 ${sidebarExpanded ? "lg:pl-[258px]" : "lg:pl-[76px]"}`}>
         <header className="sticky top-0 z-10 flex h-[68px] items-center justify-between border-b bg-white/90 px-4 backdrop-blur md:px-8">
           <div className="flex items-center gap-3">
-            <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary lg:hidden">
-              <HeartPulse className="size-5" />
-            </div>
+            <Image
+              src="/aar_logo.png"
+              alt="AAR Healthcare logo"
+              width={463}
+              height={479}
+              sizes="36px"
+              className="size-9 rounded-lg object-contain lg:hidden"
+            />
             <div>
               <p className="text-sm font-semibold">{dpo ? "DPO workspace" : "Patient portal"}</p>
               <p className="hidden text-xs text-muted-foreground sm:block">
