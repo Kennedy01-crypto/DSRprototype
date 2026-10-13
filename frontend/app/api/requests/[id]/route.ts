@@ -22,6 +22,14 @@ async function getSession() {
       ),
     };
   }
+  if (session.role === "admin") {
+    return {
+      response: NextResponse.json(
+        { detail: "The admin workspace cannot access request records." },
+        { status: 403 },
+      ),
+    };
+  }
   return { session };
 }
 

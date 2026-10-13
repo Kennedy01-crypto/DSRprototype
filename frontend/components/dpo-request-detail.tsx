@@ -36,16 +36,27 @@ import type { DSRCaseDetailResponse } from "@/lib/types";
 
 const requiredReasonActions = new Set([
   "request_information",
+  "request_legal_review",
+  "approve_legal_review",
+  "return_from_legal_review",
+  "flag_for_independent_review",
+  "mark_for_duplicate",
   "resume_escalated",
   "reject",
   "escalate",
   "approve_and_close",
+  "close_as_duplicate",
 ]);
 
 const resolutions = [
   ["FULFILLED", "Fulfilled"],
   ["PARTIALLY_FULFILLED", "Partially fulfilled"],
+  ["REJECTED", "Rejected (Refused)"],
   ["RETAINED", "Retained with rationale"],
+];
+const reviewOutcomes = [
+  ...resolutions,
+  ["DUPLICATE", "Duplicate"],
 ];
 
 function formatDate(value: string): string {
@@ -57,9 +68,8 @@ function formatDate(value: string): string {
 }
 
 function statusVariant(state: string): "default" | "secondary" | "destructive" | "outline" {
-  if (state === "Escalated" || state === "Rejected") return "destructive";
-  if (state === "Closed" || state === "Withdrawn") return "secondary";
-  if (state === "Response Preparation") return "default";
+  if (state === "Completed") return "secondary";
+  if (state === "In Progress") return "default";
   return "outline";
 }
 
@@ -87,6 +97,8 @@ export function DpoRequestDetail({
   const [action, setAction] = useState("");
   const [reason, setReason] = useState("");
   const [resolutionStatus, setResolutionStatus] = useState(resolutions[0][0]);
+  const [proposedOutcome, setProposedOutcome] = useState(resolutions[0][0]);
+  const [duplicateOf, setDuplicateOf] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [sendingMessage, setSendingMessage] = useState(false);
@@ -100,6 +112,7 @@ export function DpoRequestDetail({
       const body = await fetchCase(id);
       setData(body);
       setAssignedTo(body.request.assigned_to);
+      setProposedOutcome(body.request.proposed_outcome ?? resolutions[0][0]);
       setAction((current) =>
         body.available_actions.some((item) => item.action === current)
           ? current
@@ -125,6 +138,7 @@ export function DpoRequestDetail({
         if (cancelled) return;
         setData(body);
         setAssignedTo(body.request.assigned_to);
+        setProposedOutcome(body.request.proposed_outcome ?? resolutions[0][0]);
         setAction(body.available_actions[0]?.action ?? "");
       } catch (error) {
         if (!cancelled) {
@@ -219,9 +233,9 @@ export function DpoRequestDetail({
   const requiresReason = requiredReasonActions.has(action);
   const overdue =
     !!data &&
-    data.request.time_remaining_seconds <= 0 &&
-    data.request.closed_at === null &&
-    !["Closed", "Rejected", "Withdrawn"].includes(data.request.state);
+    (data.request.time_remaining_seconds <= 0 ||
+      data.request.legal_time_remaining_seconds === 0) &&
+    data.request.state !== "Completed";
 
   return (
     <AppShell role="dpo" principalId={principalId}>
@@ -255,7 +269,12 @@ export function DpoRequestDetail({
           </Card>
         ) : (
           <>
-            <RequestProgress state={data.request.state} audience="dpo" />
+            <RequestProgress
+              state={data.request.state}
+              subStatus={data.request.sub_status}
+              outcome={data.request.resolution_status}
+              audience="dpo"
+            />
             <Card className="border-0 shadow-sm ring-1 ring-border/80">
               <CardContent className="flex flex-col justify-between gap-5 pt-6 sm:flex-row sm:items-start">
                 <div>
@@ -263,7 +282,7 @@ export function DpoRequestDetail({
                     DPO CASE WORKSPACE
                   </p>
                   <h1 className="mt-2 text-3xl font-semibold tracking-tight">
-                    DSR-{data.request.id} · {data.request.request_type}
+                    DSR-{data.request.id} · {data.request.request_type_label ?? data.request.request_type}
                   </h1>
                   <p className="mt-2 text-sm text-muted-foreground">
                     Submitted {formatDate(data.request.submitted_at)}
@@ -273,6 +292,9 @@ export function DpoRequestDetail({
                   <Badge variant={statusVariant(data.request.state)}>
                     {data.request.state}
                   </Badge>
+                  {data.request.sub_status && (
+                    <Badge variant="outline">{data.request.sub_status}</Badge>
+                  )}
                   {overdue && <Badge variant="destructive">Overdue</Badge>}
                 </div>
               </CardContent>
@@ -309,17 +331,52 @@ export function DpoRequestDetail({
                     <div className="sm:col-span-2">
                       <dt className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                         <CalendarClock className="size-3.5" />
-                        Response target
+                        Internal target
                       </dt>
                       <dd className={`mt-1 text-sm font-medium ${overdue ? "text-rose-700" : ""}`}>
                         {formatDate(data.request.response_due_at)}
-                        {data.request.closed_at === null &&
-                        !["Closed", "Rejected", "Withdrawn"].includes(data.request.state)
+                        {data.request.state !== "Completed"
                           ? ` · ${formatSlaDue(data.request.response_due_at, currentTime, data.request.time_remaining_seconds)}`
                           : " · Target date"}
                       </dd>
                     </div>
+                    <div className="sm:col-span-2">
+                      <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        Legal deadline
+                      </dt>
+                      <dd className="mt-1 text-sm font-medium">
+                        {data.request.legal_deadline_at
+                          ? formatDate(data.request.legal_deadline_at)
+                          : "Not configured"}
+                      </dd>
+                    </div>
+                    {data.request.duplicate_of && (
+                      <div className="sm:col-span-2">
+                        <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          Original request
+                        </dt>
+                        <dd className="mt-1 text-sm font-medium">
+                          DSR-{data.request.duplicate_of}
+                        </dd>
+                      </div>
+                    )}
+                    {data.request.reconsideration_of && (
+                      <div className="sm:col-span-2">
+                        <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          Reconsideration of
+                        </dt>
+                        <dd className="mt-1 text-sm font-medium">
+                          DSR-{data.request.reconsideration_of}
+                        </dd>
+                      </div>
+                    )}
                   </dl>
+                  {data.request.independent_review_required && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                      <p className="font-semibold">Independent review required</p>
+                      <p className="mt-1">{data.request.independent_review_reason}</p>
+                    </div>
+                  )}
                   <div className="border-t pt-5">
                     <h2 className="text-sm font-semibold">Description</h2>
                     <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
@@ -407,6 +464,13 @@ export function DpoRequestDetail({
                               ...(action === "approve_and_close"
                                 ? { resolution_status: resolutionStatus }
                                 : {}),
+                              ...(action === "request_legal_review"
+                                ? { proposed_outcome: proposedOutcome }
+                                : {}),
+                              ...(action === "close_as_duplicate"
+                                || action === "mark_for_duplicate"
+                                ? { duplicate_of: Number(duplicateOf) }
+                                : {}),
                             },
                             `Request status updated${selectedAction ? `: ${selectedAction.label}` : ""}.`,
                           )
@@ -441,11 +505,67 @@ export function DpoRequestDetail({
                               disabled={saving}
                               className="h-10 w-full rounded-lg border border-input bg-white px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                             >
-                              {resolutions.map(([value, label]) => (
+                              {resolutions.map(([value, label]) => {
+                                const requiresReview =
+                                  data.request.independent_review_required ||
+                                  value !== "FULFILLED";
+                                return !data.request.legal_review_completed &&
+                                  requiresReview
+                                  ? null
+                                  : (
+                                    <option key={value} value={value}>
+                                      {label}
+                                    </option>
+                                  );
+                              })}
+                            </select>
+                            {!data.request.legal_review_completed && (
+                              <p className="text-xs text-muted-foreground">
+                                Refusal and partial outcomes are available after Legal / Management Review.
+                              </p>
+                            )}
+                          </>
+                        )}
+                        {action === "request_legal_review" && (
+                          <>
+                            <label htmlFor="proposed-outcome" className="text-sm font-medium">
+                              Outcome for independent review
+                            </label>
+                            <select
+                              id="proposed-outcome"
+                              value={proposedOutcome}
+                              onChange={(event) => setProposedOutcome(event.target.value)}
+                              disabled={saving}
+                              className="h-10 w-full rounded-lg border border-input bg-white px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                            >
+                              {reviewOutcomes.map(([value, label]) => (
                                 <option key={value} value={value}>{label}</option>
                               ))}
                             </select>
+                            <p className="text-xs text-muted-foreground">
+                              Review is bound to the latest unpublished response version and current case evidence.
+                            </p>
                           </>
+                        )}
+                        {(action === "close_as_duplicate" || action === "mark_for_duplicate") && (
+                          <div className="space-y-2">
+                            <label htmlFor="duplicate-of" className="text-sm font-medium">
+                              Canonical original request ID
+                            </label>
+                            <Input
+                              id="duplicate-of"
+                              type="number"
+                              min={1}
+                              required
+                              value={duplicateOf}
+                              onChange={(event) => setDuplicateOf(event.target.value)}
+                              placeholder="Enter the matching request ID"
+                              disabled={saving}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              The original must be a canonical case for the same requester and request type. Mark the case first, then publish its duplicate outcome before closing.
+                            </p>
+                          </div>
                         )}
                         <label htmlFor="workflow-reason" className="text-sm font-medium">
                           Reason {requiresReason ? "(required)" : "(optional)"}
@@ -459,7 +579,15 @@ export function DpoRequestDetail({
                           placeholder="Add a brief reason for this action"
                           disabled={saving}
                         />
-                        <Button type="submit" disabled={saving || !action} className="gap-2">
+                        <Button
+                          type="submit"
+                          disabled={
+                            saving ||
+                            !action ||
+                            (["close_as_duplicate", "mark_for_duplicate"].includes(action) && !duplicateOf)
+                          }
+                          className="gap-2"
+                        >
                           {saving ? <LoaderCircle className="size-4 animate-spin" /> : <Workflow className="size-4" />}
                           Apply action
                         </Button>
@@ -469,6 +597,40 @@ export function DpoRequestDetail({
                 </Card>
               </div>
             </div>
+
+            <Card className="border-0 shadow-sm ring-1 ring-border/80">
+              <CardHeader>
+                <CardTitle className="text-lg">Independent review history</CardTitle>
+                <CardDescription>
+                  Review decisions apply only to the exact response version and case evidence listed.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {data.legal_reviews.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No independent review has been requested.</p>
+                ) : (
+                  <ol className="space-y-4">
+                    {data.legal_reviews.map((review) => (
+                      <li key={review.id} className="rounded-lg border p-4 text-sm">
+                        <p className="font-medium">
+                          Version {review.response_version} · {review.proposed_outcome}
+                        </p>
+                        <p className="mt-1 text-muted-foreground">
+                          Requested by {review.requested_by} on {formatDate(review.requested_at)}: {review.request_reason}
+                        </p>
+                        {review.decision ? (
+                          <p className="mt-2">
+                            {review.decision.outcome} by {review.decision.reviewer_id} on {formatDate(review.decision.decided_at)}: {review.decision.rationale}
+                          </p>
+                        ) : (
+                          <p className="mt-2 font-medium text-amber-800">Awaiting independent review.</p>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </CardContent>
+            </Card>
 
             <Card className="border-0 shadow-sm ring-1 ring-border/80">
               <CardHeader>

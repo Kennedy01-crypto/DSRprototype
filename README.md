@@ -8,8 +8,8 @@ This project is a demonstration of a DSR management workflow rather than a full 
 
 - accept requests from patients or data subjects through a portal
 - process requests through internal review stages
-- track a configurable prototype response target for each request
-- escalate overdue cases
+- track separate configurable internal targets and legal deadlines
+- record overdue deadline events without automatically pausing or escalating cases
 - log every state transition for audit purposes
 - handle data collection and quarantine as part of the review process
 
@@ -20,23 +20,20 @@ In short, it is a prototype for managing the lifecycle of privacy rights request
 The request lifecycle is modeled as a finite state machine. A DSR can move through states like:
 
 - Submitted
-- Accepted / Under Assessment
-- Departmental Search
-- Privacy Review
-- Legal / Management Review
-- Response Preparation
-- Closed
-- Rejected
-- Escalated
+- In Progress (Departmental Search, Privacy Review, Legal / Management Review,
+  Waiting for Subject Information, or Response Preparation)
+- Completed (Fulfilled, Partially Fulfilled, Rejected, Withdrawn, or Duplicate)
 
-These transitions are implemented in the Django model and enforced by the django-fsm package. Each state change records the actor and reason for traceability.
+Patients see only the three major statuses; DPOs can see the processing substatus. These transitions are implemented in the Django model and enforced by the django-fsm package. Each state change records the actor and reason for traceability.
+
+Refusals, partial outcomes, retention decisions, and cases explicitly flagged as sensitive or complex require independent review before a response can be published or the case closed. Review is bound to the exact response version and case evidence; the requester, response author, and assigned handler cannot approve it. A changed case requires a new response version and review. Duplicate cases are linked to a canonical case, then completed only after the duplicate outcome is recorded and published. Patients may withdraw only before any response has been published; eligible completed cases can be linked to a new reconsideration request.
 
 ## Main features
 
 - Patient portal API for submitting and viewing personal requests
 - Patient portal and DPO browser workspaces for the synthetic prototype workflow
 - DPO queue filters, case assignment, review tasks, review decisions, and patient update history
-- DPO overdue, unassigned, and escalated work queues plus audited CSV reports
+- DPO overdue, due-soon, unassigned, and escalated work queues plus audited CSV reports
 - Patient withdrawal and clarification-response flows, with reasoned escalation recovery
 - Mock-only PARAS/CIMS/ERPS source-search checklist with status and evidence references
 - Response-preparation draft assembled from workflow records and requiring staff review
@@ -44,8 +41,10 @@ These transitions are implemented in the Django model and enforced by the django
 - Patient portal visibility restricted to published responses for the authenticated patient's own cases
 - Separate workflow audit and case-activity timelines
 - Explicit case resolution outcomes when closing requests
-- Simulated role-based bearer authentication for patient and DPO roles
-- Configurable prototype response-target calculation by request type
+- Independent review for sensitive/complex cases and refusal, partial, or retention outcomes
+- Canonical duplicate-case linkage and patient-linked reconsideration submissions
+- Simulated role-based bearer authentication for patient, DPO, and restricted admin roles
+- DPO-configurable internal targets and optional legal deadlines by request type, with an audit history
 - Celery background tasks for data collection and SLA monitoring
 - Audit logging for every transition
 - Data quarantine model for secure retention of collected data payloads
@@ -76,7 +75,9 @@ These transitions are implemented in the Django model and enforced by the django
 - GET /api/v1/dpo/dsrs/
   View all requests and a basic departmental heatmap.
 - POST /api/v1/dpo/dsrs/<id>/transition/
-  Move a request through workflow transitions such as `start_departmental_search`, `request_legal_review`, `approve_and_close`, `reject`, and `escalate`.
+  Move a request through workflow transitions such as `start_departmental_search`, `request_legal_review`, and `approve_and_close`.
+- GET|PATCH /api/v1/dpo/policies/
+  Review and update per-request-type deadline policy. Updates are reasoned and audited, and affect new requests only.
 - GET|POST /api/v1/dpo/dsrs/<id>/response-versions/
   List finalized response versions or create a new immutable version after readiness checks.
 - POST /api/v1/dpo/dsrs/<id>/response-versions/<version-id>/publish/
@@ -109,7 +110,7 @@ These tokens stand in for an upstream identity system that has already verified 
 
    `http://localhost:8000`
 
-The new UI starts with a mock role/ID sign-in, a patient request list and submission form, and a DPO queue with filters and workload indicators. The DPO case-detail workflows remain in the existing Django workspace during this first frontend phase. The frontend calls the Django API through same-origin Next.js route handlers; its signed HttpOnly demo session does not authenticate real users. Configure `NEXT_MOCK_SESSION_SECRET` in `.env` for local use. Keep `web` in `DJANGO_ALLOWED_HOSTS` so the frontend container can reach Django using its Compose service name. Response target defaults are not validated legal deadlines. See [API_README.md](API_README.md) for the backend browser and API routes, request examples, and workflow actions. The web container runs database migrations automatically on startup.
+The new UI starts with a mock role/ID sign-in, a patient request list and submission form, and a DPO queue with filters and workload indicators. The DPO case-detail workflows remain in the existing Django workspace during this first frontend phase. The frontend calls the Django API through same-origin Next.js route handlers; its signed HttpOnly demo session does not authenticate real users. Configure `NEXT_MOCK_SESSION_SECRET` in `.env` for local use. Keep `web` in `DJANGO_ALLOWED_HOSTS` so the frontend container can reach Django using its Compose service name. Internal target defaults are demonstration policy only; legal deadlines remain unset until configured by a DPO. See [API_README.md](API_README.md) for the backend browser and API routes, request examples, and workflow actions. The web container runs database migrations automatically on startup.
 
 To load the synthetic acceptance pack, run `docker compose exec web python manage.py seed_demo_data`. Use the DPO role with any mock staff ID to inspect the queue; use the patient role with `mock-patient-acceptance-access` to view the example published response. Other seeded patient IDs and expected scenarios are listed in [API_README.md](API_README.md). The erasure/retention example is explicitly hypothetical and is not legal guidance.
 
@@ -117,7 +118,7 @@ Run its focused regression checks with `docker compose exec web python manage.py
 
 ## Celery and SLA monitoring
 
-The project includes a Beat schedule that runs `monitor_sla_deadlines` every 15 minutes. That task escalates active requests that pass their configured prototype response target. Confirm the appropriate legal and operational policy before using these targets outside the mock-data demo.
+The project includes a Beat schedule that runs `monitor_sla_deadlines` every 15 minutes. It records overdue events for active internal targets and configured legal deadlines; it does not change request states or pause/reset clocks. Waiting for internal teams is an operational delay, not a reason to stop a deadline. Confirm the applicable jurisdiction's legal timeline with authorized privacy/legal owners before setting legal deadlines or using this prototype beyond mock data.
 
 ## Repository structure
 
@@ -133,6 +134,7 @@ The project includes a Beat schedule that runs `monitor_sla_deadlines` every 15 
 This is a prototype, not a full production compliance system. Browser and API authentication are simulated, outbound patient communications are not sent, source-system results are mocked, and response-target defaults are not legal advice. Do not enter real patient or clinical information. The application does not implement real identity verification, production encryption, regulator reporting, or integrations with PARAS, CIMS, or ERPS.
 
 Response finalization and portal publication are distinct, audited steps. Only
-published response content is exposed in a patient's portal. Finalized versions
-and publication records are application-level append-only; no second-approver
-requirement is assumed pending confirmation of AAR policy.
+published response content is exposed in a patient's portal. Finalized versions,
+publication records, and independent-review records are application-level
+append-only. This prototype's reviewer separation compares mock principal IDs
+only; it is not a production identity or role-separation control.

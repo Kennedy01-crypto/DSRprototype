@@ -32,9 +32,13 @@ const navItems = {
   dpo: [
     { label: "Overview", href: "/dpo", icon: LayoutDashboard },
     { label: "Request queue", href: "/dpo/requests", icon: ClipboardList },
+    { label: "Deadline policy", href: "/dpo/policy", icon: FileText },
   ],
   patient: [
     { label: "My requests", href: "/patient", icon: FileText },
+  ],
+  admin: [
+    { label: "Admin overview", href: "/admin", icon: ShieldCheck },
   ],
 };
 
@@ -172,7 +176,9 @@ export function AppShell({ role, principalId, children }: AppShellProps) {
               className="size-9 rounded-lg object-contain lg:hidden"
             />
             <div>
-              <p className="text-sm font-semibold">{dpo ? "DPO workspace" : "Patient portal"}</p>
+              <p className="text-sm font-semibold">
+                {dpo ? "DPO workspace" : role === "admin" ? "Admin workspace" : "Patient portal"}
+              </p>
               <p className="hidden text-xs text-muted-foreground sm:block">
                 Mock identity: {principalId}
               </p>

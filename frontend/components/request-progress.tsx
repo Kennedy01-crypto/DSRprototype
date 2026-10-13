@@ -1,122 +1,70 @@
 import { Check, Circle } from "lucide-react";
 
 const stages = [
-  {
-    state: "Submitted",
-    dpo: "Submitted",
-    patient: "Request received",
-  },
-  {
-    state: "Accepted / Under Assessment",
-    dpo: "Assessment",
-    patient: "Reviewing your request",
-  },
-  {
-    state: "Departmental Search",
-    dpo: "Department search",
-    patient: "Checking relevant records",
-  },
-  {
-    state: "Privacy Review",
-    dpo: "Privacy review",
-    patient: "Reviewing privacy requirements",
-  },
-  {
-    state: "Legal / Management Review",
-    dpo: "Legal / management",
-    patient: "Completing required review",
-  },
-  {
-    state: "Response Preparation",
-    dpo: "Preparing response",
-    patient: "Preparing your response",
-  },
+  { state: "Submitted", patient: "Request received", dpo: "Submitted" },
+  { state: "In Progress", patient: "In progress", dpo: "In progress" },
+  { state: "Completed", patient: "Request completed", dpo: "Completed" },
 ];
 
-const statusGuidance: Record<string, { heading: string; detail: string }> = {
-  Submitted: {
-    heading: "Request received",
-    detail: "Your request has been received and is awaiting assessment.",
-  },
-  "Accepted / Under Assessment": {
-    heading: "Your request is being assessed",
-    detail: "The team is reviewing your request and deciding what work is needed.",
-  },
-  "Departmental Search": {
-    heading: "Relevant records are being checked",
-    detail: "The team is checking the relevant department for information related to your request.",
-  },
-  "Privacy Review": {
-    heading: "Privacy review in progress",
-    detail: "The team is checking the information and how it can be provided.",
-  },
-  "Legal / Management Review": {
-    heading: "Additional review in progress",
-    detail: "The request is receiving an additional legal or management review.",
-  },
-  "Response Preparation": {
-    heading: "Your response is being prepared",
-    detail: "The team is preparing the response to your request.",
-  },
-  "Waiting for Subject Information": {
-    heading: "Action needed: please reply",
-    detail: "The team needs information from you before work can continue. Read the Messages section below to see the question and reply.",
-  },
-  Escalated: {
-    heading: "Request referred for additional review",
-    detail: "The request has been referred for additional review. The team will continue processing it after that review.",
-  },
-  Closed: {
-    heading: "Request completed",
-    detail: "This request is closed. Check Published responses for the outcome.",
-  },
-  Rejected: {
-    heading: "Request not approved",
-    detail: "This request has been closed without approval. Check the messages or contact the DPO if you need clarification.",
-  },
-  Withdrawn: {
-    heading: "Request withdrawn",
-    detail: "This request has been withdrawn and will not continue through processing.",
-  },
+const subStatusGuidance: Record<string, string> = {
+  "Departmental Search": "Relevant departments are searching their records.",
+  "Privacy Review": "The DPO is reviewing the request and search results.",
+  "Legal / Management Review": "The request is receiving legal or management review.",
+  "Waiting for Subject Information": "The case is waiting for a response from the requester.",
+  "Response Preparation": "The response is being prepared.",
+  Fulfilled: "The request was fulfilled and the response was communicated.",
+  "Partially fulfilled": "The request was partially fulfilled and the outcome was communicated.",
+  Rejected: "The request was refused and the decision was communicated.",
+  Withdrawn: "The requester withdrew the request.",
+  Duplicate: "The request was closed as a duplicate.",
 };
 
 export function RequestProgress({
   state,
+  subStatus,
+  outcome,
+  requiresPatientResponse = false,
   audience,
 }: {
   state: string;
+  subStatus?: string;
+  outcome?: string;
+  requiresPatientResponse?: boolean;
   audience: "dpo" | "patient";
 }) {
-  const guidance = statusGuidance[state] ?? {
-    heading: state,
-    detail: "The request status has been updated.",
-  };
-  const specialState =
-    state === "Waiting for Subject Information" ||
-    state === "Escalated" ||
-    state === "Closed" ||
-    state === "Rejected" ||
-    state === "Withdrawn";
+  const patientActionNeeded =
+    audience === "patient" && requiresPatientResponse;
+  const displayOutcome = outcome || subStatus || "";
+  const patientDetail = patientActionNeeded
+    ? "The team needs more information from you. Open Messages to read the question and reply."
+    : state === "Submitted"
+      ? "Your request has been received and is awaiting assessment."
+      : state === "Completed"
+        ? `The organization has finished processing and communicated the outcome${displayOutcome ? `: ${displayOutcome}` : ""}.`
+        : "Your request is being processed.";
+  const dpoDetail =
+    state === "In Progress" && subStatus
+      ? `${subStatusGuidance[subStatus] ?? "The request is being processed."} Current stage: ${subStatus}.`
+      : state === "Completed" && displayOutcome
+        ? `${subStatusGuidance[displayOutcome] ?? "The request has been completed."} Outcome: ${displayOutcome}.`
+        : state === "Submitted"
+          ? "The request has been received and is awaiting assessment."
+          : "The request is being processed.";
+  const detail = audience === "patient" ? patientDetail : dpoDetail;
   const currentStage = stages.findIndex((stage) => stage.state === state);
-  const detail =
-    audience === "dpo" && state === "Waiting for Subject Information"
-      ? "The case is paused until requested information is received. Review the patient messages and follow up if needed."
-      : audience === "dpo" && state === "Closed"
-        ? "The case is closed. Review the recorded outcome and published response."
-        : guidance.detail;
 
   return (
     <section aria-label="Request progress" className="space-y-4">
       <div className="rounded-lg border bg-muted/35 p-4" role="status">
-        <h2 className="text-sm font-semibold">{guidance.heading}</h2>
-        <p className="mt-1 text-sm leading-6 text-muted-foreground">
-          {audience === "patient" ? detail : `${detail} Current status: ${state}.`}
-        </p>
+        <h2 className="text-sm font-semibold">
+          {patientActionNeeded ? "Action needed: please reply" : state}
+        </h2>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">{detail}</p>
       </div>
-      {!specialState && currentStage >= 0 && (
+      {currentStage >= 0 && (
         <ol
-          aria-label="Processing stages"
-          className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6"
+          aria-label="Request status"
+          className="grid gap-3 sm:grid-cols-3"
         >
           {stages.map((stage, index) => {
             const completed = index < currentStage;

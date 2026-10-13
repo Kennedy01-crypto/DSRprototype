@@ -10,6 +10,12 @@ export async function GET(request: Request) {
   if (!session) {
     return NextResponse.json({ detail: "Sign in to the demo workspace." }, { status: 401 });
   }
+  if (session.role === "admin") {
+    return NextResponse.json(
+      { detail: "The admin workspace cannot access request records." },
+      { status: 403 },
+    );
+  }
 
   const path =
     session.role === "patient"

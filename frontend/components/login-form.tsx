@@ -33,7 +33,7 @@ export function LoginForm() {
         return;
       }
       toast.success(`Opened the mock ${role} workspace.`);
-      router.push(role === "dpo" ? "/dpo" : "/patient");
+      router.push(role === "dpo" ? "/dpo" : role === "admin" ? "/admin" : "/patient");
       router.refresh();
     } catch {
       toast.error("The UI service could not complete sign-in.");
@@ -114,8 +114,8 @@ export function LoginForm() {
               <form onSubmit={handleSubmit} className="space-y-5">
                 <fieldset>
                   <legend className="mb-2 text-sm font-medium">Workspace</legend>
-                  <div className="grid grid-cols-2 gap-2 rounded-xl bg-muted p-1">
-                    {(["patient", "dpo"] as const).map((item) => (
+                  <div className="grid grid-cols-3 gap-2 rounded-xl bg-muted p-1">
+                    {(["patient", "dpo", "admin"] as const).map((item) => (
                       <button
                         key={item}
                         type="button"
@@ -127,7 +127,11 @@ export function LoginForm() {
                             : "text-muted-foreground hover:text-foreground"
                         }`}
                       >
-                        {item === "dpo" ? "DPO workspace" : "Patient portal"}
+                        {item === "dpo"
+                          ? "DPO workspace"
+                          : item === "admin"
+                            ? "Admin workspace"
+                            : "Patient portal"}
                       </button>
                     ))}
                   </div>
@@ -139,7 +143,13 @@ export function LoginForm() {
                     autoComplete="off"
                     value={principalId}
                     onChange={(event) => setPrincipalId(event.target.value)}
-                    placeholder={role === "patient" ? "e.g. mock-patient-access" : "e.g. mock-reviewer"}
+                    placeholder={
+                      role === "patient"
+                        ? "e.g. mock-patient-access"
+                        : role === "admin"
+                          ? "e.g. mock-admin"
+                          : "e.g. mock-reviewer"
+                    }
                     minLength={1}
                     maxLength={128}
                     pattern="[A-Za-z0-9_.:\x2d]+"

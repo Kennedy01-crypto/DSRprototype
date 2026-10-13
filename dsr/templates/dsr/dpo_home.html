@@ -30,7 +30,7 @@
       <option value="">All cases</option>
       <option value="overdue" {% if queue_filter == "overdue" %}selected{% endif %}>Overdue active cases</option>
       <option value="unassigned" {% if queue_filter == "unassigned" %}selected{% endif %}>Unassigned cases</option>
-      <option value="escalated" {% if queue_filter == "escalated" %}selected{% endif %}>Escalated cases</option>
+      <option value="waiting" {% if queue_filter == "waiting" %}selected{% endif %}>Waiting for patient</option>
     </select>
     <p><button type="submit">Filter</button> <a href="{% url 'dpo-home' %}">Clear filters</a></p>
   </form>
@@ -38,7 +38,7 @@
 </section>
 {% if requests %}
   <div class="table-wrap"><table>
-    <thead><tr><th>Reference</th><th>Subject</th><th>Type</th><th>Department</th><th>Status</th><th>Owner</th><th>Target response date</th><th>Queue</th></tr></thead>
+    <thead><tr><th>Reference</th><th>Subject</th><th>Type</th><th>Department</th><th>Status</th><th>Owner</th><th>Internal target</th><th>Legal deadline</th><th>Queue</th></tr></thead>
     <tbody>
       {% for item in requests %}
         <tr>
@@ -46,9 +46,10 @@
           <td>{{ item.patient_id }}</td>
           <td>{{ item.get_request_type_display }}</td>
           <td>{{ item.department|default:"Unassigned" }}</td>
-          <td>{{ item.get_state_display }}</td>
+          <td>{{ item.major_status }}{% if item.major_status == "In Progress" %}<br><small>{{ item.workflow_substatus }}</small>{% elif item.major_status == "Completed" %}<br><small>{{ item.workflow_substatus }}</small>{% endif %}</td>
           <td>{{ item.assigned_to|default:"Unassigned" }}</td>
           <td>{% if item.is_overdue %}<span class="error">Overdue</span><br>{% endif %}{{ item.response_due_at|date:"j M Y, H:i" }}</td>
+          <td>{% if item.legal_deadline_at %}{{ item.legal_deadline_at|date:"j M Y, H:i" }}{% else %}Not configured{% endif %}</td>
           <td><a href="{% url 'dpo-request' item.pk %}">Review request</a></td>
         </tr>
       {% endfor %}

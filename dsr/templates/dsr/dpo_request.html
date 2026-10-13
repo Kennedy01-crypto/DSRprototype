@@ -9,8 +9,8 @@
     <p>Submitted {{ dsr.submitted_at|date:"j M Y" }} · Subject <code>{{ dsr.patient_id }}</code></p>
   </div>
   <div class="status-stack">
-    <span class="status-pill">{{ dsr.get_state_display }}</span>
-    {% if dsr.is_overdue %}<span class="status-pill status-alert">Response target overdue</span>{% endif %}
+    <span class="status-pill">{{ dsr.major_status }} · {{ dsr.workflow_substatus }}</span>
+    {% if dsr.is_overdue %}<span class="status-pill status-alert">Deadline overdue</span>{% endif %}
   </div>
 </header>
 {% for error in errors %}<p class="error" role="alert">{{ error }}</p>{% endfor %}
@@ -25,7 +25,8 @@
     <div><dt>Resolution</dt><dd>{{ dsr.get_resolution_status_display }}</dd></div>
     <div><dt>Assigned to</dt><dd>{{ dsr.assigned_to|default:"Unassigned" }}</dd></div>
     <div><dt>Department</dt><dd>{{ dsr.department|default:"Unassigned" }}</dd></div>
-    <div><dt>Response target</dt><dd>{{ dsr.response_due_at|date:"j M Y, H:i" }}</dd></div>
+    <div><dt>Internal target</dt><dd>{{ dsr.response_due_at|date:"j M Y, H:i" }}</dd></div>
+    <div><dt>Legal deadline</dt><dd>{% if dsr.legal_deadline_at %}{{ dsr.legal_deadline_at|date:"j M Y, H:i" }}{% else %}Not configured{% endif %}</dd></div>
   </dl>
   <h3>Request details</h3>
   <p>{{ dsr.description|linebreaksbr }}</p>
@@ -263,14 +264,45 @@
         <option value="">Select if closing the request</option>
         <option value="FULFILLED">Fulfilled</option>
         <option value="PARTIALLY_FULFILLED">Partially fulfilled</option>
+        <option value="REJECTED">Rejected (Refused)</option>
         <option value="RETAINED">Retained with rationale</option>
       </select>
-      <label for="reason">Reason / case note (required for rejection, escalation, information requests, resumption, and closure)</label>
+      <label for="proposed_outcome">Outcome for independent review (required when requesting review)</label>
+      <select id="proposed_outcome" name="proposed_outcome">
+        <option value="FULFILLED">Fulfilled</option>
+        <option value="PARTIALLY_FULFILLED">Partially fulfilled</option>
+        <option value="REJECTED">Rejected (Refused)</option>
+        <option value="RETAINED">Retained with rationale</option>
+      </select>
+      <label for="duplicate_of">Canonical original request ID (required when marking/closing as duplicate)</label>
+      <input id="duplicate_of" name="duplicate_of" type="number" min="1">
+      <p class="notice">Mark a case as duplicate before preparing its response. Publish the response version that records the duplicate outcome before completing the case.</p>
+      <label for="reason">Reason / case note (required for independent review, review decisions, classification, information requests, resumption, and closure)</label>
       <textarea id="reason" name="reason"></textarea>
       <p><button type="submit">Record action</button></p>
     </form>
   </section>
 {% endif %}
+<section id="activity">
+  <h2>Independent review history</h2>
+  {% if legal_reviews %}
+    <ol>
+      {% for review in legal_reviews %}
+        <li>
+          <strong>Version {{ review.response_version.version }} · {{ review.get_proposed_outcome_display }}</strong>
+          — requested by {{ review.requested_by }}: {{ review.request_reason }}
+          {% if review.decision %}
+            <p>{{ review.decision.get_outcome_display }} by {{ review.decision.reviewer_id }} — {{ review.decision.rationale }}</p>
+          {% else %}
+            <p>Awaiting independent review.</p>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ol>
+  {% else %}
+    <p>No independent review has been requested.</p>
+  {% endif %}
+</section>
 <section id="activity">
   <h2>Case activity</h2>
   {% if events %}

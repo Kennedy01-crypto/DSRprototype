@@ -49,8 +49,6 @@ TIME_ZONE = "Africa/Nairobi"
 USE_I18N = True
 USE_TZ = True
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-DSR_LONG_RESPONSE_TARGET_DAYS = int(os.environ.get("DSR_LONG_RESPONSE_TARGET_DAYS", "30"))
-DSR_DEFAULT_RESPONSE_TARGET_DAYS = int(os.environ.get("DSR_DEFAULT_RESPONSE_TARGET_DAYS", "14"))
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ("dsr.authentication.PatientPortalJWTAuthentication",),
 }

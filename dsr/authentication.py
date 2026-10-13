@@ -22,7 +22,7 @@ class SimulatedPrincipal:
 class PatientPortalJWTAuthentication(BaseAuthentication):
     """Prototype parser for portal-issued tokens: ``Bearer patient:<id>`` or ``Bearer dpo:<id>``."""
 
-    token_pattern = re.compile(r"^(patient|dpo):([A-Za-z0-9_.:-]{1,128})$")
+    token_pattern = re.compile(r"^(patient|dpo|admin):([A-Za-z0-9_.:-]{1,128})$")
 
     def authenticate(self, request: object) -> tuple[SimulatedPrincipal, str] | None:
         header = request.META.get("HTTP_AUTHORIZATION", "")  # type: ignore[attr-defined]

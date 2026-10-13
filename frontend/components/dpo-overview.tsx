@@ -31,16 +31,15 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import type { DPOQueueResponse, DSRRequest } from "@/lib/types";
 
-const TERMINAL_STATES = new Set(["Closed", "Rejected", "Withdrawn"]);
+const TERMINAL_STATES = new Set(["Completed"]);
 
 const workflowStates = [
-  ["ACCEPTED", "Accepted / Under Assessment"],
+  ["SUBMITTED", "Submitted"],
   ["DEPT_SEARCH", "Departmental Search"],
   ["PRIVACY_REVIEW", "Privacy Review"],
   ["LEGAL_REVIEW", "Legal / Management Review"],
   ["RESPONSE_PREP", "Response Preparation"],
   ["NEEDS_INFORMATION", "Waiting for Subject Information"],
-  ["ESCALATED", "Escalated"],
 ];
 
 function isActive(request: DSRRequest): boolean {
@@ -58,8 +57,8 @@ function formatDate(value: string): string {
 function statusVariant(
   state: string,
 ): "default" | "secondary" | "destructive" | "outline" {
-  if (state === "Escalated" || state === "Rejected") return "destructive";
-  if (state === "Closed" || state === "Withdrawn") return "secondary";
+  if (state === "Completed") return "secondary";
+  if (state === "Submitted") return "outline";
   if (state === "Response Preparation") return "default";
   return "outline";
 }
@@ -106,16 +105,25 @@ export function DpoOverview({ principalId }: { principalId: string }) {
   const requests = useMemo(() => data?.requests ?? [], [data]);
   const activeRequests = useMemo(() => requests.filter(isActive), [requests]);
   const overdue = activeRequests.filter(
-    (item) => item.time_remaining_seconds <= 0,
+    (item) =>
+      item.time_remaining_seconds <= 0 ||
+      item.legal_time_remaining_seconds === 0,
   );
   const unassigned = activeRequests.filter((item) => !item.assigned_to);
   const waitingForInformation = activeRequests.filter(
-    (item) => item.state === "Waiting for Subject Information",
+    (item) => item.sub_status === "Waiting for Subject Information",
   );
   const dueSoon = activeRequests.filter(
-    (item) =>
-      item.time_remaining_seconds > 0 &&
-      item.time_remaining_seconds <= 7 * 24 * 60 * 60,
+    (item) => {
+      const nextDeadlineSeconds = Math.min(
+        item.time_remaining_seconds,
+        item.legal_time_remaining_seconds ?? Number.POSITIVE_INFINITY,
+      );
+      return (
+        nextDeadlineSeconds > 0 &&
+        nextDeadlineSeconds <= 7 * 24 * 60 * 60
+      );
+    },
   );
 
   const statusCounts = useMemo(
@@ -124,7 +132,11 @@ export function DpoOverview({ principalId }: { principalId: string }) {
         .map(([value, label]) => ({
           value,
           label,
-          count: activeRequests.filter((item) => item.state === label).length,
+          count: activeRequests.filter((item) =>
+            value === "SUBMITTED"
+              ? item.state === "Submitted"
+              : item.sub_status === label,
+          ).length,
         }))
         .filter((item) => item.count > 0)
         .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label)),
@@ -150,11 +162,17 @@ export function DpoOverview({ principalId }: { principalId: string }) {
   const attentionRequests = useMemo(() => {
     return activeRequests
       .map((request) => {
-        const isOverdue = request.time_remaining_seconds <= 0;
+        const isOverdue =
+          request.time_remaining_seconds <= 0 ||
+          request.legal_time_remaining_seconds === 0;
         const isUnassigned = !request.assigned_to;
+        const nextDeadlineSeconds = Math.min(
+          request.time_remaining_seconds,
+          request.legal_time_remaining_seconds ?? Number.POSITIVE_INFINITY,
+        );
         const isDueSoon =
-          request.time_remaining_seconds > 0 &&
-          request.time_remaining_seconds <= 7 * 24 * 60 * 60;
+          nextDeadlineSeconds > 0 &&
+          nextDeadlineSeconds <= 7 * 24 * 60 * 60;
         return {
           request,
           reasons: [
@@ -169,7 +187,14 @@ export function DpoOverview({ principalId }: { principalId: string }) {
       .sort(
         (a, b) =>
           a.priority - b.priority ||
-          a.request.time_remaining_seconds - b.request.time_remaining_seconds,
+          Math.min(
+            a.request.time_remaining_seconds,
+            a.request.legal_time_remaining_seconds ?? Number.POSITIVE_INFINITY,
+          ) -
+            Math.min(
+              b.request.time_remaining_seconds,
+              b.request.legal_time_remaining_seconds ?? Number.POSITIVE_INFINITY,
+            ),
       )
       .slice(0, 6);
   }, [activeRequests]);
@@ -321,10 +346,10 @@ export function DpoOverview({ principalId }: { principalId: string }) {
                               href={`/dpo/requests/${request.id}`}
                               className="font-semibold text-primary hover:underline"
                             >
-                              DSR-{request.id} · {request.request_type}
+                              DSR-{request.id} · {request.request_type_label ?? request.request_type}
                             </Link>
                             <p className="mt-1 truncate text-xs text-muted-foreground">
-                              {request.department || "Unassigned department"} · Target{" "}
+                              {request.department || "Unassigned department"} · Internal target{" "}
                               {formatDate(request.response_due_at)}
                             </p>
                             <div className="mt-2 flex flex-wrap gap-1.5">
@@ -473,7 +498,7 @@ export function DpoOverview({ principalId }: { principalId: string }) {
                             href={`/dpo/requests/${request.id}`}
                             className="font-medium text-primary hover:underline"
                           >
-                            DSR-{request.id} · {request.request_type}
+                            DSR-{request.id} · {request.request_type_label ?? request.request_type}
                           </Link>
                           <p className="mt-1 truncate text-xs text-muted-foreground">
                             {request.department || "Unassigned department"} · Submitted{" "}
@@ -482,6 +507,11 @@ export function DpoOverview({ principalId }: { principalId: string }) {
                         </div>
                         <div className="flex items-center gap-3">
                           <Badge variant={statusVariant(request.state)}>{request.state}</Badge>
+                          {request.sub_status && (
+                            <span className="text-xs text-muted-foreground">
+                              {request.sub_status}
+                            </span>
+                          )}
                           <Link
                             href={`/dpo/requests/${request.id}`}
                             className="text-xs font-semibold text-primary hover:underline"

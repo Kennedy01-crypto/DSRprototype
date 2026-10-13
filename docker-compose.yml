@@ -32,8 +32,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dsr}
       POSTGRES_HOST: db
       CELERY_BROKER_URL: redis://redis:6379/0
-      DSR_LONG_RESPONSE_TARGET_DAYS: ${DSR_LONG_RESPONSE_TARGET_DAYS:-30}
-      DSR_DEFAULT_RESPONSE_TARGET_DAYS: ${DSR_DEFAULT_RESPONSE_TARGET_DAYS:-14}
     command: sh -c "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3"
     ports:
       - "8000:8000"

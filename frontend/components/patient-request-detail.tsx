@@ -35,9 +35,8 @@ import type { PatientRequestDetailResponse } from "@/lib/types";
 function badgeVariant(
   state: string,
 ): "default" | "secondary" | "destructive" | "outline" {
-  if (state === "Escalated" || state === "Rejected") return "destructive";
-  if (state === "Closed" || state === "Withdrawn") return "secondary";
-  if (state === "Waiting for Subject Information") return "outline";
+  if (state === "Completed") return "secondary";
+  if (state === "Submitted") return "outline";
   return "default";
 }
 
@@ -141,9 +140,9 @@ export function PatientRequestDetail({
 
   const overdue =
     !!data &&
-    data.time_remaining_seconds <= 0 &&
-    data.closed_at === null &&
-    !["Closed", "Rejected", "Withdrawn"].includes(data.state);
+    (data.time_remaining_seconds <= 0 ||
+      data.legal_time_remaining_seconds === 0) &&
+    data.state !== "Completed";
 
   return (
     <AppShell role="patient" principalId={principalId}>
@@ -188,7 +187,12 @@ export function PatientRequestDetail({
         ) : (
           <>
             {!communicationsOnly && (
-              <RequestProgress state={data.state} audience="patient" />
+              <RequestProgress
+                state={data.state}
+                outcome={data.resolution_status}
+                requiresPatientResponse={data.requires_patient_response}
+                audience="patient"
+              />
             )}
             <Card className="border-0 shadow-sm ring-1 ring-border/80">
               <CardContent className="flex flex-col justify-between gap-5 pt-6 sm:flex-row sm:items-start">
@@ -197,7 +201,7 @@ export function PatientRequestDetail({
                     {communicationsOnly ? "REQUEST MESSAGES" : "YOUR REQUEST"}
                   </p>
                   <h1 className="mt-2 text-3xl font-semibold tracking-tight">
-                    DSR-{data.id} · {data.request_type}
+                    DSR-{data.id} · {data.request_type_label ?? data.request_type}
                   </h1>
                   <p className="mt-2 text-sm text-muted-foreground">
                     Submitted {formatDate(data.submitted_at)}
@@ -236,14 +240,23 @@ export function PatientRequestDetail({
                     <div className="sm:col-span-2">
                       <dt className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                         <CalendarClock className="size-3.5" />
-                        Response target
+                        Internal target
                       </dt>
                       <dd className={`mt-1 text-sm font-medium ${overdue ? "text-rose-700" : ""}`}>
                         {formatDate(data.response_due_at)}
-                        {data.closed_at === null &&
-                        !["Closed", "Rejected", "Withdrawn"].includes(data.state)
+                        {data.state !== "Completed"
                           ? ` · ${formatSlaDue(data.response_due_at, currentTime, data.time_remaining_seconds)}`
                           : " · Target date"}
+                      </dd>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        Legal deadline
+                      </dt>
+                      <dd className="mt-1 text-sm font-medium">
+                        {data.legal_deadline_at
+                          ? formatDate(data.legal_deadline_at)
+                          : "Not configured"}
                       </dd>
                     </div>
                   </dl>
@@ -344,7 +357,7 @@ export function PatientRequestDetail({
                     </ol>
                   )}
 
-                  {data.state === "Waiting for Subject Information" && (
+                  {data.requires_patient_response && (
                     <form
                       onSubmit={async (event) => {
                         event.preventDefault();
@@ -409,7 +422,7 @@ export function PatientRequestDetail({
                       </Button>
                     </form>
                   )}
-                  {data.state !== "Waiting for Subject Information" &&
+                  {!data.requires_patient_response &&
                     data.communications.length > 0 && (
                       <p className="border-t pt-4 text-xs text-muted-foreground">
                         You can reply when the request is waiting for your information.

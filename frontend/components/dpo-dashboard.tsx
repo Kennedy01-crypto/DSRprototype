@@ -57,26 +57,20 @@ interface DPOProps {
 
 const states = [
   ["", "All statuses"],
-  ["ACCEPTED", "Accepted / Under Assessment"],
-  ["DEPT_SEARCH", "Departmental Search"],
-  ["PRIVACY_REVIEW", "Privacy Review"],
-  ["LEGAL_REVIEW", "Legal / Management Review"],
-  ["RESPONSE_PREP", "Response Preparation"],
-  ["NEEDS_INFORMATION", "Waiting for Subject Information"],
-  ["ESCALATED", "Escalated"],
-  ["CLOSED", "Closed"],
-  ["REJECTED", "Rejected"],
-  ["WITHDRAWN", "Withdrawn"],
+  ["SUBMITTED", "Submitted"],
+  ["IN_PROGRESS", "In Progress"],
+  ["COMPLETED", "Completed"],
 ];
 
 const requestTypes = [
   ["", "All request types"],
-  ["ACCESS", "Access"],
-  ["PORTABILITY", "Portability"],
-  ["RECTIFICATION", "Rectification"],
-  ["ERASURE", "Erasure"],
+  ["ACCESS", "Access / Copy"],
+  ["PORTABILITY", "Data transfer / Portability"],
+  ["RECTIFICATION", "Rectification / Correction"],
+  ["ERASURE", "Deletion / Erasure"],
   ["RESTRICTION", "Restriction"],
   ["OBJECTION", "Objection"],
+  ["OTHER", "Other"],
 ];
 
 const queues = [
@@ -84,7 +78,7 @@ const queues = [
   ["overdue", "Overdue"],
   ["due_soon", "Due in the next 7 days"],
   ["unassigned", "Unassigned"],
-  ["escalated", "Escalated"],
+  ["waiting", "Waiting for patient"],
 ];
 
 const queuePresets = [
@@ -95,9 +89,8 @@ const queuePresets = [
 ] as const;
 
 function statusVariant(state: string): "default" | "secondary" | "destructive" | "outline" {
-  if (state === "Escalated" || state === "Rejected") return "destructive";
-  if (state === "Closed") return "secondary";
-  if (state === "Response Preparation") return "default";
+  if (state === "Completed") return "secondary";
+  if (state === "In Progress") return "default";
   return "outline";
 }
 
@@ -189,20 +182,21 @@ export function DpoDashboard({
   );
   const overdueCount = requests.filter(
     (item) =>
-      !["Closed", "Rejected", "Withdrawn"].includes(item.state) &&
+      item.state !== "Completed" &&
       item.closed_at === null &&
-      (currentTime === null
-        ? item.time_remaining_seconds <= 0
-        : new Date(item.response_due_at).getTime() <= currentTime),
+      (item.time_remaining_seconds <= 0 ||
+        item.legal_time_remaining_seconds === 0),
   ).length;
   const unassignedCount = requests.filter(
     (item) =>
       !item.assigned_to &&
       item.closed_at === null &&
-      !["Closed", "Rejected", "Withdrawn"].includes(item.state),
+      item.state !== "Completed",
   ).length;
   const inReviewCount = requests.filter(
-    (item) => item.state === "Privacy Review" || item.state === "Legal / Management Review",
+    (item) =>
+      item.sub_status === "Privacy Review" ||
+      item.sub_status === "Legal / Management Review",
   ).length;
   const activeFilters = [
     ...(search.trim() ? [{ label: `Search: ${search.trim()}`, clear: () => { setSearch(""); setPage(1); } }] : []),
@@ -214,10 +208,12 @@ export function DpoDashboard({
   ];
 
   function applyPreset(preset: "mine" | "overdue" | "unassigned" | "waiting") {
-    setState(preset === "waiting" ? "NEEDS_INFORMATION" : "");
+    setState("");
     setRequestType("");
     setQueue(
-      preset === "overdue" || preset === "unassigned" ? preset : "",
+      preset === "overdue" || preset === "unassigned" || preset === "waiting"
+        ? preset
+        : "",
     );
     setAssignedTo(preset === "mine" ? principalId : "");
     setDepartment("");
@@ -483,14 +479,13 @@ function QueueRow({
   currentTime: number | null;
 }) {
   const overdue =
-    (currentTime === null
-      ? item.time_remaining_seconds <= 0
-      : new Date(item.response_due_at).getTime() <= currentTime) &&
+    (item.time_remaining_seconds <= 0 ||
+      item.legal_time_remaining_seconds === 0) &&
     item.closed_at === null &&
-    !["Closed", "Rejected", "Withdrawn"].includes(item.state);
+    item.state !== "Completed";
   const slaLabel =
     item.closed_at === null &&
-    !["Closed", "Rejected", "Withdrawn"].includes(item.state)
+    item.state !== "Completed"
       ? formatSlaDue(
           item.response_due_at,
           currentTime,
@@ -505,12 +500,15 @@ function QueueRow({
           href={`/dpo/requests/${item.id}`}
           className="font-semibold text-primary hover:underline focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2"
         >
-          DSR-{item.id} · {item.request_type}
+          DSR-{item.id} · {item.request_type_label ?? item.request_type}
         </Link>
         <p className="mt-1 line-clamp-2 max-w-[320px] text-xs leading-5 text-muted-foreground">{item.description}</p>
       </TableCell>
       <TableCell>
         <Badge variant={statusVariant(item.state)}>{item.state}</Badge>
+        {item.sub_status && (
+          <p className="mt-1 text-xs text-muted-foreground">{item.sub_status}</p>
+        )}
       </TableCell>
       <TableCell className="min-w-[160px]">
         <p className="text-sm">{item.department || "Unassigned department"}</p>
@@ -520,7 +518,11 @@ function QueueRow({
       <TableCell className="whitespace-nowrap">
         <p className={`text-sm font-medium ${overdue ? "text-rose-700" : ""}`}>{formatDate(item.response_due_at)}</p>
         <p className={`mt-1 text-xs ${overdue ? "font-medium text-rose-700" : "text-muted-foreground"}`}>
-          {slaLabel}
+          Internal target · {slaLabel}
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Legal deadline:{" "}
+          {item.legal_deadline_at ? formatDate(item.legal_deadline_at) : "Not configured"}
         </p>
       </TableCell>
       <TableCell className="font-mono text-xs text-muted-foreground">

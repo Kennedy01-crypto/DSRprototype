@@ -1,0 +1,10 @@
+{% extends "dsr/base.html" %}
+{% block title %}Admin workspace{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+<section class="card">
+  <p>Signed in as mock administrator <code>{{ admin_id }}</code>.</p>
+  <p>This role cannot access request records or edit DPO deadline policies.</p>
+  <p>User administration is deferred until integration with the organization identity system.</p>
+</section>
+{% endblock %}

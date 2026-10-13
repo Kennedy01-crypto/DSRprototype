@@ -15,6 +15,14 @@ async function getRequestSession(context: RouteContext) {
       ),
     };
   }
+  if (session.role === "admin") {
+    return {
+      response: NextResponse.json(
+        { detail: "The admin workspace cannot access request records." },
+        { status: 403 },
+      ),
+    };
+  }
   const { id } = await context.params;
   if (!/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id))) {
     return {

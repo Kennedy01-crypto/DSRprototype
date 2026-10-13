@@ -46,18 +46,18 @@ interface PatientProps {
 }
 
 const requestTypes = [
-  ["ACCESS", "Access"],
-  ["PORTABILITY", "Portability"],
-  ["RECTIFICATION", "Rectification"],
-  ["ERASURE", "Erasure"],
+  ["ACCESS", "Access / Copy"],
+  ["PORTABILITY", "Data transfer / Portability"],
+  ["RECTIFICATION", "Rectification / Correction"],
+  ["ERASURE", "Deletion / Erasure"],
   ["RESTRICTION", "Restriction"],
   ["OBJECTION", "Objection"],
+  ["OTHER", "Other"],
 ];
 
 function badgeVariant(state: string): "default" | "secondary" | "destructive" | "outline" {
-  if (state === "Escalated" || state === "Rejected") return "destructive";
-  if (state === "Closed") return "secondary";
-  if (state === "Waiting for Subject Information") return "outline";
+  if (state === "Completed") return "secondary";
+  if (state === "Submitted") return "outline";
   return "default";
 }
 
@@ -74,6 +74,7 @@ export function PatientDashboard({ principalId }: PatientProps) {
   const [requestType, setRequestType] = useState("ACCESS");
   const [description, setDescription] = useState("");
   const [department, setDepartment] = useState("");
+  const [reconsiderationOf, setReconsiderationOf] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [search, setSearch] = useState("");
@@ -109,7 +110,7 @@ export function PatientDashboard({ principalId }: PatientProps) {
     const term = search.trim().toLowerCase();
     return term
       ? items.filter((item) =>
-          [item.id.toString(), item.request_type, item.state, item.description]
+          [item.id.toString(), item.request_type_label ?? item.request_type, item.state, item.description]
             .join(" ")
             .toLowerCase()
             .includes(term),
@@ -118,12 +119,12 @@ export function PatientDashboard({ principalId }: PatientProps) {
   }, [requests, search]);
 
   const activeCount = (requests ?? []).filter(
-    (item) => item.closed_at === null && item.state !== "Rejected" && item.state !== "Withdrawn",
+    (item) => item.state !== "Completed",
   ).length;
   const waitingCount = (requests ?? []).filter(
-    (item) => item.state === "Waiting for Subject Information",
+    (item) => item.requires_patient_response,
   ).length;
-  const completedCount = (requests ?? []).filter((item) => item.closed_at !== null).length;
+  const completedCount = (requests ?? []).filter((item) => item.state === "Completed").length;
   const pageCount = Math.max(1, Math.ceil(visibleRequests.length / REQUESTS_PER_PAGE));
   const currentPage = Math.min(page, pageCount);
   const paginatedRequests = visibleRequests.slice(
@@ -146,6 +147,7 @@ export function PatientDashboard({ principalId }: PatientProps) {
           request_type: requestType,
           description: description.trim(),
           department: department.trim(),
+          reconsideration_of: reconsiderationOf ? Number(reconsiderationOf) : null,
         }),
       });
       const body = (await response.json()) as DSRRequest | { detail?: string };
@@ -155,6 +157,7 @@ export function PatientDashboard({ principalId }: PatientProps) {
       toast.success("Your mock request was submitted.");
       setDescription("");
       setDepartment("");
+      setReconsiderationOf("");
       setRefresh((current) => current + 1);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Request could not be submitted.");
@@ -280,12 +283,47 @@ export function PatientDashboard({ principalId }: PatientProps) {
                   <select
                     id="request-type"
                     value={requestType}
-                    onChange={(event) => setRequestType(event.target.value)}
+                    onChange={(event) => {
+                      setRequestType(event.target.value);
+                      setReconsiderationOf("");
+                    }}
                     className="h-10 w-full rounded-lg border border-input bg-white px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                   >
                     {requestTypes.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                   </select>
                 </div>
+                {(requests ?? []).some(
+                  (item) =>
+                    item.state === "Completed" &&
+                    item.request_type === requestType &&
+                    !item.duplicate_of,
+                ) && (
+                  <div className="space-y-2">
+                    <Label htmlFor="reconsideration-of">
+                      Is this a reconsideration of a completed request? (optional)
+                    </Label>
+                    <select
+                      id="reconsideration-of"
+                      value={reconsiderationOf}
+                      onChange={(event) => setReconsiderationOf(event.target.value)}
+                      className="h-10 w-full rounded-lg border border-input bg-white px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                    >
+                      <option value="">No, this is a new request</option>
+                      {(requests ?? [])
+                        .filter(
+                          (item) =>
+                            item.state === "Completed" &&
+                            item.request_type === requestType &&
+                            !item.duplicate_of,
+                        )
+                        .map((item) => (
+                          <option key={item.id} value={item.id}>
+                            DSR-{item.id} · {item.resolution_status}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                )}
                 <div className="space-y-2">
                   <Label htmlFor="request-description">What is your request about?</Label>
                   <Textarea
@@ -328,15 +366,23 @@ export function PatientDashboard({ principalId }: PatientProps) {
 }
 
 function PatientRequestRow({ item, number }: { item: DSRRequest; number: number }) {
-  const overdue = item.time_remaining_seconds <= 0 && item.closed_at === null;
+  const overdue =
+    (item.time_remaining_seconds <= 0 ||
+      item.legal_time_remaining_seconds === 0) &&
+    item.state !== "Completed";
   return (
     <TableRow>
       <TableCell className="font-mono text-xs text-muted-foreground">{number}</TableCell>
       <TableCell className="min-w-[220px]">
-        <p className="font-semibold">DSR-{item.id} · {item.request_type}</p>
+        <p className="font-semibold">DSR-{item.id} · {item.request_type_label ?? item.request_type}</p>
         <p className="mt-1 line-clamp-2 max-w-[360px] text-xs leading-5 text-muted-foreground">
           {item.description}
         </p>
+        {item.reconsideration_of && (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Reconsideration of DSR-{item.reconsideration_of}
+          </p>
+        )}
         {item.closed_at && (
           <p className="mt-1 text-xs text-muted-foreground">
             Resolution: {item.resolution_status}
@@ -354,7 +400,7 @@ function PatientRequestRow({ item, number }: { item: DSRRequest; number: number 
           {formatDate(item.response_due_at)}
         </p>
         <p className={`mt-1 text-xs ${overdue ? "text-rose-700" : "text-muted-foreground"}`}>
-          {overdue ? "Overdue" : "Within target"}
+          {overdue ? "Internal target overdue" : "Internal target"}
         </p>
       </TableCell>
       <TableCell className="text-right">

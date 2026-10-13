@@ -5,6 +5,14 @@ import { getDemoSession } from "@/lib/session";
 
 export default async function LoginPage() {
   const session = await getDemoSession();
-  if (session) redirect(session.role === "dpo" ? "/dpo" : "/patient");
+  if (session) {
+    redirect(
+      session.role === "dpo"
+        ? "/dpo"
+        : session.role === "admin"
+          ? "/admin"
+          : "/patient",
+    );
+  }
   return <LoginForm />;
 }

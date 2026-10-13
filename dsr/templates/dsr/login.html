@@ -11,6 +11,7 @@
     <select id="role" name="role">
       <option value="patient" {% if role == "patient" %}selected{% endif %}>Patient portal</option>
       <option value="dpo" {% if role == "dpo" %}selected{% endif %}>DPO workspace</option>
+      <option value="admin" {% if role == "admin" %}selected{% endif %}>Admin workspace</option>
     </select>
     <label for="principal_id">Mock patient or staff ID</label>
     <input id="principal_id" name="principal_id" required maxlength="128" autocomplete="off">

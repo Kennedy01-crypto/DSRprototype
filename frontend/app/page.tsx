@@ -5,5 +5,11 @@ import { getDemoSession } from "@/lib/session";
 export default async function HomePage() {
   const session = await getDemoSession();
   if (!session) redirect("/login");
-  redirect(session.role === "dpo" ? "/dpo" : "/patient");
+  redirect(
+    session.role === "dpo"
+      ? "/dpo"
+      : session.role === "admin"
+        ? "/admin"
+        : "/patient",
+  );
 }

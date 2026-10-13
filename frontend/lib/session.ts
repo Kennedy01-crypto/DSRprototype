@@ -39,7 +39,9 @@ function parseToken(token: string | undefined): DemoSession | null {
       Buffer.from(payload, "base64url").toString("utf8"),
     ) as Partial<DemoSession>;
     if (
-      (session.role !== "patient" && session.role !== "dpo") ||
+      (session.role !== "patient" &&
+        session.role !== "dpo" &&
+        session.role !== "admin") ||
       typeof session.principalId !== "string" ||
       !/^[A-Za-z0-9_.:-]{1,128}$/.test(session.principalId)
     ) {
@@ -62,7 +64,7 @@ export function createSessionToken(session: DemoSession): string {
 }
 
 export function isDemoRole(value: unknown): value is DemoRole {
-  return value === "patient" || value === "dpo";
+  return value === "patient" || value === "dpo" || value === "admin";
 }
 
 export function sessionCookieOptions() {
