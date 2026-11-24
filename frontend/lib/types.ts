@@ -91,6 +91,14 @@ export interface DSRCaseDetailResponse {
   work_items: DSRWorkItem[];
   escalations: DSREscalation[];
   exceptions: DSRCaseException[];
+  /** DPO view only. */
+  source_searches?: DSRSourceSearch[];
+  /** DPO view only. */
+  decisions?: DSRDecision[];
+  /** DPO view only. */
+  response_versions?: DSRResponseVersion[];
+  /** DPO view only: why a response can't be finalized or published yet, or null. */
+  response_readiness?: string | null;
   review_material?: {
     response_version: number;
     response_content: string;
@@ -98,6 +106,46 @@ export interface DSRCaseDetailResponse {
     source_searches: Array<Record<string, unknown>>;
     decisions: Array<Record<string, unknown>>;
   };
+}
+
+export interface DSRSourceSearch {
+  id: number;
+  /** Display label, e.g. "CIMS (mock source)". */
+  source_system: string;
+  /** Display label: "Pending", "Complete" or "Blocked". */
+  status: string;
+  summary: string;
+  evidence_reference: string;
+  created_by: string;
+  updated_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DSRDecision {
+  id: number;
+  category: string;
+  /** Display label, e.g. "Partially fulfilled". */
+  outcome: string;
+  rationale: string;
+  recorded_by: string;
+  created_at: string;
+}
+
+export interface DSRResponseVersion {
+  id: number;
+  version: number;
+  content: string;
+  case_snapshot: Record<string, unknown>;
+  finalized_by: string;
+  finalized_at: string;
+  publication: { published_by: string; published_at: string } | null;
+}
+
+export interface DSRResponseDraft {
+  draft_text: string;
+  notice: string;
+  searches_complete: boolean;
 }
 
 export interface DSRWorkItem {

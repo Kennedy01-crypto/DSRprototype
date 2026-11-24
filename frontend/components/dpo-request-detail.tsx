@@ -17,6 +17,7 @@ import {
 import { toast } from "sonner";
 
 import { AppShell } from "@/components/app-shell";
+import { DpoCaseEvidence } from "@/components/dpo-case-evidence";
 import { RequestProgress } from "@/components/request-progress";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -784,6 +785,10 @@ export function DpoRequestDetail({
                 </Card>
               </div>
             </div>
+
+            {role === "dpo" && (
+              <DpoCaseEvidence id={id} data={data} onChanged={() => loadCase(false)} />
+            )}
 
             <Card className="border-0 shadow-sm ring-1 ring-border/80">
               <CardHeader>

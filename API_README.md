@@ -75,19 +75,11 @@ Requires a DPO token. `GET` lists the configured internal target and optional le
 
 The policy is used when new requests are submitted. Deadline monitoring records overdue events but does not change workflow state. Waiting for a patient or internal team does not pause or reset either deadline; there is currently no clock-pause mechanism.
 
-## Browser interfaces
+## User interface
 
-The homepage links to the prototype browser workspaces:
+The Django service is API-only. `GET /` returns a small JSON status document. All screens (patient portal, DPO queue and case workspace, department contributor queue, independent reviewer queue) are in the Next.js frontend at `http://localhost:3002`, which calls this API through same-origin route handlers.
 
-- `GET /demo/login/?role=patient` — sign in to the patient portal with a mock ID
-- `GET /demo/login/?role=dpo` — sign in to the DPO workspace with a mock ID
-- `GET /demo/login/?role=admin` — sign in to the restricted mock admin landing page
-- `GET /patient/` — submit requests and review requests belonging to the current mock patient
-- `GET /dpo/` — filter the DPO queue by status, request type, or assignee
-- `GET /dpo/requests/<id>/` — assign a case, document mock source searches, preview a response draft, manage review tasks, record decisions and patient updates, perform workflow actions, and review activity/audit histories
-- `POST /demo/logout/` — clear the demo session
-
-The browser workspaces use Django sessions and CSRF-protected forms. Their sign-in only lets a user select a mock role and ID; it does not verify identity or authorize access to real patient data. The API continues to use its separate simulated bearer-token authentication.
+The DPO case detail (`GET /api/v1/dpo/dsrs/<id>/`) includes `source_searches`, `decisions`, `response_versions`, and `response_readiness` (the reason a response cannot be finalized or published yet, or `null`) so the case screen loads in one request.
 
 Load the fictional demo cases and acceptance scenarios with:
 
@@ -282,22 +274,17 @@ or secure evidence storage.
 
 Allows the authenticated patient to withdraw their own request before any response has been published. An optional `reason` may be supplied. Withdrawal is recorded as a distinct terminal `WITHDRAWN` state and resolution; it does not delete the request or audit history. Attempts to withdraw another patient's request return `404`; a published response or other terminal state prevents withdrawal and returns `409`.
 
-### `GET /dpo/export/`
-
-Downloads the currently filtered browser DPO queue as CSV. Requires a DPO demo session; the API export instead requires a DPO bearer token.
-
 Assignment, task, decision, and communication changes also create append-only case-activity events. Workflow state transitions create entries in the transition audit log. These application-level append-only protections are not tamper-proof against database administrators.
 
 Finalized response versions are immutable in the application and revisions
 create a higher numbered version. Publication is a separate append-only record,
-so finalization alone never makes content visible to a patient. The browser DPO
-workspace supports the same review/finalize/publish workflow. Publication
+so finalization alone never makes content visible to a patient. Publication
 is a separate DPO action. Where independent review is required, the reviewer
 must be a different mock principal from the review requester, response author,
 and assigned handler. These mock-ID checks are workflow safeguards only, not
 production identity or role-separation controls.
 
-The browser patient portal also supports withdrawal and, when a case is waiting for subject information, sending a response. When requesting information, DPOs should record the actual question as a patient update; the transition reason is internal audit context. Escalated cases can be resumed by a DPO with a required reason; they return to the stage they were escalated from. When the patient responds to an information request, the case returns to the stage it was waiting from. Resuming does not reset the response target or re-run data collection. Requests waiting for information retain their original target date; no legal deadline pause is implemented.
+The patient portal also supports withdrawal and, when a case is waiting for subject information, sending a response. When requesting information, DPOs should record the actual question as a patient update; the transition reason is internal audit context. Escalated cases can be resumed by a DPO with a required reason; they return to the stage they were escalated from. When the patient responds to an information request, the case returns to the stage it was waiting from. Resuming does not reset the response target or re-run data collection. Requests waiting for information retain their original target date; no legal deadline pause is implemented.
 
 ## Response fields
 

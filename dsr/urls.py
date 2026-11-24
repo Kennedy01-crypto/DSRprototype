@@ -26,30 +26,16 @@ from .views import (
     DSRCaseExceptionView,
     DSRAssignedWorkView,
     DSRAssignedReviewsView,
-    admin_home,
-    demo_login,
-    demo_logout,
-    dpo_home,
-    dpo_export,
-    dpo_request_detail,
-    homepage,
-    patient_home,
+    api_index,
 )
 
 urlpatterns = [
-    path("", homepage, name="homepage"),
-    path("demo/login/", demo_login, name="demo-login"),
-    path("demo/logout/", demo_logout, name="demo-logout"),
-    path("patient/", patient_home, name="patient-home"),
-    path("dpo/", dpo_home, name="dpo-home"),
-    path("admin/", admin_home, name="admin-home"),
+    path("", api_index, name="api-index"),
     path(
         "api/v1/dpo/policies/",
         DSRDeadlinePolicyView.as_view(),
         name="dpo-deadline-policies",
     ),
-    path("dpo/export/", dpo_export, name="dpo-export"),
-    path("dpo/requests/<int:pk>/", dpo_request_detail, name="dpo-request"),
     path(
         "api/v1/dpo/dsrs/<int:pk>/",
         DSRCaseDetailView.as_view(),

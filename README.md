@@ -31,7 +31,7 @@ Refusals, partial outcomes, retention decisions, and cases explicitly flagged as
 ## Main features
 
 - Patient portal API for submitting and viewing personal requests
-- Patient portal and DPO browser workspaces for the synthetic prototype workflow
+- Next.js patient portal and DPO, department contributor, and independent reviewer workspaces
 - DPO queue filters, case assignment, review tasks, review decisions, and patient update history
 - DPO overdue, due-soon, unassigned, and escalated work queues plus audited CSV reports
 - Patient withdrawal and clarification-response flows, with reasoned escalation recovery
@@ -106,15 +106,15 @@ These tokens stand in for an upstream identity system that has already verified 
 
    `http://localhost:3002`
 
-5. The Django API and existing browser workspace remain available at:
+5. The Django API (no browser pages) is available at:
 
    `http://localhost:8002`
 
-The new UI starts with a mock role/ID sign-in, a patient request list and submission form, and a DPO queue with filters and workload indicators. The DPO case-detail workflows remain in the existing Django workspace during this first frontend phase. The frontend calls the Django API through same-origin Next.js route handlers; its signed HttpOnly demo session does not authenticate real users. Configure `NEXT_MOCK_SESSION_SECRET` in `.env` for local use. Keep `web` in `DJANGO_ALLOWED_HOSTS` so the frontend container can reach Django using its Compose service name. Internal target defaults are demonstration policy only; legal deadlines remain unset until configured by a DPO. See [API_README.md](API_README.md) for the backend browser and API routes, request examples, and workflow actions. The web container runs database migrations automatically on startup.
+The UI starts with a mock role/ID sign-in. Patients submit and follow requests; DPOs work the queue and run each case end to end (searches, decisions, draft, finalize, publish, review, close) on the case page; contributors and independent reviewers get their own queues. The frontend calls the Django API through same-origin Next.js route handlers; its signed HttpOnly demo session does not authenticate real users. Configure `NEXT_MOCK_SESSION_SECRET` in `.env` for local use. Keep `web` in `DJANGO_ALLOWED_HOSTS` so the frontend container can reach Django using its Compose service name. Internal target defaults are demonstration policy only; legal deadlines remain unset until configured by a DPO. See [API_README.md](API_README.md) for the API routes, request examples, and workflow actions. The web container runs database migrations automatically on startup.
 
 To load the synthetic acceptance pack, run `docker compose exec web python manage.py seed_demo_data`. Use the DPO role with any mock staff ID to inspect the queue; use the patient role with `mock-patient-acceptance-access` to view the example published response. Other seeded patient IDs and expected scenarios are listed in [API_README.md](API_README.md). The erasure/retention example is explicitly hypothetical and is not legal guidance.
 
-Run its focused regression checks with `docker compose exec web python manage.py test dsr.tests.test_acceptance_pack dsr.tests.test_workflow`.
+Run the backend tests with `docker compose exec web python manage.py test dsr`.
 
 ## Celery and SLA monitoring
 
@@ -123,7 +123,13 @@ The project includes a Beat schedule that runs `monitor_sla_deadlines` every 15 
 ## Repository structure
 
 - `config/` - Django settings, Celery configuration, and routing
-- `dsr/` - models, serializers, views, authentication, task logic, and workflow logic
+- `dsr/models.py` - data model and the case state machine
+- `dsr/services.py` - workflow rules and every write to a case; call these from views, tasks, or integrations
+- `dsr/selectors.py` - read-only queries and screen data (queue filters, activity, available actions, response draft)
+- `dsr/views.py` - thin API views: check role and input, call one service, serialize the result
+- `dsr/exceptions.py` - workflow errors and their HTTP mapping
+- `dsr/permissions.py` - role gate for every API view
+- `frontend/` - Next.js user interface
 - `docker-compose.yml` - service orchestration for local development
 - `Dockerfile` - container build definition
 - `.env.example` - environment variable template
@@ -131,7 +137,7 @@ The project includes a Beat schedule that runs `monitor_sla_deadlines` every 15 
 
 ## Important note
 
-This is a prototype, not a full production compliance system. Browser and API authentication are simulated, outbound patient communications are not sent, source-system results are mocked, and response-target defaults are not legal advice. Do not enter real patient or clinical information. The application does not implement real identity verification, production encryption, regulator reporting, or integrations with PARAS, CIMS, or ERPS.
+This is a prototype, not a full production compliance system. Authentication is simulated, outbound patient communications are not sent, source-system results are mocked, and response-target defaults are not legal advice. Do not enter real patient or clinical information. The application does not implement real identity verification, production encryption, regulator reporting, or integrations with PARAS, CIMS, or ERPS.
 
 Response finalization and portal publication are distinct, audited steps. Only
 published response content is exposed in a patient's portal. Finalized versions,

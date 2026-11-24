@@ -22,7 +22,7 @@ import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { StatCard } from "@/components/stat-card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -198,6 +198,16 @@ export function DpoDashboard({
       item.sub_status === "Privacy Review" ||
       item.sub_status === "Legal / Management Review",
   ).length;
+  const exportQuery = (() => {
+    const params = new URLSearchParams();
+    if (state) params.set("state", state);
+    if (requestType) params.set("type", requestType);
+    if (department.trim()) params.set("department", department.trim());
+    if (queue) params.set("queue", queue);
+    if (assignedTo.trim()) params.set("assigned_to", assignedTo.trim());
+    return params.toString();
+  })();
+
   const activeFilters = [
     ...(search.trim() ? [{ label: `Search: ${search.trim()}`, clear: () => { setSearch(""); setPage(1); } }] : []),
     ...(state ? [{ label: `Status: ${states.find(([value]) => value === state)?.[1] ?? state}`, clear: () => { setState(""); setPage(1); } }] : []),
@@ -333,10 +343,14 @@ export function DpoDashboard({
                   className="h-10 pl-9"
                 />
               </label>
-              <Button variant="secondary" className="gap-2" disabled title="CSV export will be added with the case-detail workflow">
+              <a
+                href={`/api/dpo/export?${exportQuery}`}
+                className={buttonVariants({ variant: "secondary", className: "h-10 gap-2" })}
+                title="Download the filtered queue as CSV. Each exported case gets an audit entry."
+              >
                 <Download className="size-4" />
-                Export
-              </Button>
+                Export CSV
+              </a>
             </div>
 
             {activeFilters.length > 0 && (
