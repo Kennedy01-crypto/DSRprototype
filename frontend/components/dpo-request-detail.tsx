@@ -32,7 +32,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { formatSlaDue } from "@/lib/format-sla";
 import { useCurrentTime } from "@/hooks/use-current-time";
-import type { DSRCaseDetailResponse } from "@/lib/types";
+import type { DemoRole, DSRCaseDetailResponse } from "@/lib/types";
 
 const requiredReasonActions = new Set([
   "request_information",
@@ -53,11 +53,26 @@ const resolutions = [
   ["PARTIALLY_FULFILLED", "Partially fulfilled"],
   ["REJECTED", "Rejected (Refused)"],
   ["RETAINED", "Retained with rationale"],
+  ["OUT_OF_SCOPE", "Out of scope"],
+  ["UNABLE_TO_PROCESS", "Unable to process"],
 ];
 const reviewOutcomes = [
   ...resolutions,
   ["DUPLICATE", "Duplicate"],
 ];
+const workTypes = [
+  ["DEPARTMENT_SEARCH", "Departmental search"],
+  ["PRIVACY_REVIEW", "Privacy review"],
+  ["LEGAL_MANAGEMENT", "Legal / management input"],
+  ["RESPONSE_PREPARATION", "Response preparation"],
+  ["OTHER", "Other"],
+] as const;
+const workStatuses = [
+  ["OPEN", "Open"],
+  ["IN_PROGRESS", "In progress"],
+  ["COMPLETED", "Completed"],
+  ["BLOCKED", "Blocked"],
+] as const;
 
 function formatDate(value: string): string {
   return new Intl.DateTimeFormat("en-KE", {
@@ -87,9 +102,11 @@ async function fetchCase(id: number): Promise<DSRCaseDetailResponse> {
 export function DpoRequestDetail({
   id,
   principalId,
+  role = "dpo",
 }: {
   id: number;
   principalId: string;
+  role?: DemoRole;
 }) {
   const [data, setData] = useState<DSRCaseDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -98,7 +115,23 @@ export function DpoRequestDetail({
   const [reason, setReason] = useState("");
   const [resolutionStatus, setResolutionStatus] = useState(resolutions[0][0]);
   const [proposedOutcome, setProposedOutcome] = useState(resolutions[0][0]);
+  const [assignedReviewer, setAssignedReviewer] = useState("");
   const [duplicateOf, setDuplicateOf] = useState("");
+  const [taskTitle, setTaskTitle] = useState("");
+  const [taskType, setTaskType] = useState<(typeof workTypes)[number][0]>("DEPARTMENT_SEARCH");
+  const [taskAssignee, setTaskAssignee] = useState("");
+  const [taskDetails, setTaskDetails] = useState("");
+  const [taskDueAt, setTaskDueAt] = useState("");
+  const [taskRequired, setTaskRequired] = useState(false);
+  const [taskSaving, setTaskSaving] = useState(false);
+  const [exceptionType, setExceptionType] = useState("CLARIFICATION");
+  const [exceptionReason, setExceptionReason] = useState("");
+  const [exceptionPolicyReason, setExceptionPolicyReason] = useState("");
+  const [patientNotification, setPatientNotification] = useState("");
+  const [deadlineEffectDays, setDeadlineEffectDays] = useState("");
+  const [exceptionSaving, setExceptionSaving] = useState(false);
+  const [jurisdictionCode, setJurisdictionCode] = useState("KE");
+  const [jurisdictionReason, setJurisdictionReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [sendingMessage, setSendingMessage] = useState(false);
@@ -112,6 +145,7 @@ export function DpoRequestDetail({
       const body = await fetchCase(id);
       setData(body);
       setAssignedTo(body.request.assigned_to);
+      setJurisdictionCode(body.request.jurisdiction_code ?? "KE");
       setProposedOutcome(body.request.proposed_outcome ?? resolutions[0][0]);
       setAction((current) =>
         body.available_actions.some((item) => item.action === current)
@@ -138,6 +172,7 @@ export function DpoRequestDetail({
         if (cancelled) return;
         setData(body);
         setAssignedTo(body.request.assigned_to);
+        setJurisdictionCode(body.request.jurisdiction_code ?? "KE");
         setProposedOutcome(body.request.proposed_outcome ?? resolutions[0][0]);
         setAction(body.available_actions[0]?.action ?? "");
       } catch (error) {
@@ -203,7 +238,6 @@ export function DpoRequestDetail({
     event.preventDefault();
     const trimmedMessage = message.trim();
     if (!trimmedMessage) return;
-
     setSendingMessage(true);
     try {
       const response = await fetch(`/api/requests/${id}/communications`, {
@@ -227,6 +261,123 @@ export function DpoRequestDetail({
     }
   }
 
+  async function createWorkItem(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setTaskSaving(true);
+    try {
+      const response = await fetch(`/api/requests/${id}/tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: taskTitle.trim(),
+          task_type: taskType,
+          assigned_to: taskAssignee.trim(),
+          details: taskDetails.trim(),
+          due_at: taskDueAt ? new Date(taskDueAt).toISOString() : null,
+          required_for_completion: taskRequired,
+        }),
+      });
+      const body = (await response.json()) as { detail?: string };
+      if (!response.ok) throw new Error(body.detail ?? "Could not create the work item.");
+      setTaskTitle("");
+      setTaskAssignee("");
+      setTaskDetails("");
+      setTaskDueAt("");
+      setTaskRequired(false);
+      toast.success("Parallel work item created.");
+      await loadCase(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not create the work item.");
+    } finally {
+      setTaskSaving(false);
+    }
+  }
+
+  async function updateWorkItem(event: FormEvent<HTMLFormElement>, itemId: number) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const status = String(form.get("status") ?? "");
+    const completionSummary = String(form.get("completion_summary") ?? "").trim();
+    if (status === "COMPLETED" && !completionSummary) {
+      toast.error("Record a completion summary before completing this work item.");
+      return;
+    }
+    setTaskSaving(true);
+    try {
+      const response = await fetch(`/api/requests/${id}/tasks/${itemId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status, completion_summary: completionSummary }),
+      });
+      const body = (await response.json()) as { detail?: string };
+      if (!response.ok) throw new Error(body.detail ?? "Could not update the work item.");
+      toast.success("Work item updated.");
+      await loadCase(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update the work item.");
+    } finally {
+      setTaskSaving(false);
+    }
+  }
+
+  async function createException(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setExceptionSaving(true);
+    try {
+      const response = await fetch(`/api/requests/${id}/exceptions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          exception_type: exceptionType,
+          reason: exceptionReason.trim(),
+          patient_notification: patientNotification.trim(),
+          ...(exceptionType === "DEADLINE_PAUSE"
+            ? { policy_reason: exceptionPolicyReason.trim() }
+            : {}),
+          ...(exceptionType === "EXTENSION" || exceptionType === "DEADLINE_PAUSE"
+            ? { deadline_effect_days: Number(deadlineEffectDays) }
+            : {}),
+        }),
+      });
+      const body = (await response.json()) as { detail?: string };
+      if (!response.ok) throw new Error(body.detail ?? "Could not record the exception.");
+      setExceptionReason("");
+      setExceptionPolicyReason("");
+      setPatientNotification("");
+      setDeadlineEffectDays("");
+      toast.success("Case exception recorded and audited.");
+      await loadCase(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not record the exception.");
+    } finally {
+      setExceptionSaving(false);
+    }
+  }
+
+  async function updateJurisdiction(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/requests/${id}/jurisdiction`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jurisdiction_code: jurisdictionCode.trim().toUpperCase(),
+          reason: jurisdictionReason.trim(),
+        }),
+      });
+      const body = (await response.json()) as { detail?: string };
+      if (!response.ok) throw new Error(body.detail ?? "Could not classify the jurisdiction.");
+      setJurisdictionReason("");
+      toast.success("Jurisdiction and deadline-policy snapshot updated.");
+      await loadCase(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not classify the jurisdiction.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const selectedAction = data?.available_actions.find(
     (item) => item.action === action,
   );
@@ -238,7 +389,7 @@ export function DpoRequestDetail({
     data.request.state !== "Completed";
 
   return (
-    <AppShell role="dpo" principalId={principalId}>
+    <AppShell role={role} principalId={principalId}>
       <div className="space-y-6">
         <Link
           href="/dpo/requests"
@@ -295,12 +446,23 @@ export function DpoRequestDetail({
                   {data.request.sub_status && (
                     <Badge variant="outline">{data.request.sub_status}</Badge>
                   )}
+                  {data.request.case_stage && (
+                    <Badge variant="secondary">
+                      Stage: {data.request.case_stage.replaceAll("_", " ")}
+                    </Badge>
+                  )}
+                  {data.request.escalation_active && (
+                    <Badge variant="destructive">Escalated</Badge>
+                  )}
+                  {data.request.waiting_for_subject_information && (
+                    <Badge variant="outline">Waiting for patient information</Badge>
+                  )}
                   {overdue && <Badge variant="destructive">Overdue</Badge>}
                 </div>
               </CardContent>
             </Card>
 
-            <div className="grid gap-5 xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,1fr)]">
+            <div className={`grid gap-5 ${role === "dpo" ? "xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,1fr)]" : ""}`}>
               <Card className="border-0 shadow-sm ring-1 ring-border/80">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-lg">
@@ -312,6 +474,14 @@ export function DpoRequestDetail({
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <dl className="grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        Intake jurisdiction
+                      </dt>
+                      <dd className="mt-1 text-sm font-medium">
+                        {data.request.jurisdiction_code ?? "KE"} · policy snapshot
+                      </dd>
+                    </div>
                     <div>
                       <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                         Department
@@ -387,7 +557,7 @@ export function DpoRequestDetail({
               </Card>
 
               <div className="space-y-5">
-                <Card className="border-0 shadow-sm ring-1 ring-border/80">
+                {role === "dpo" && <Card className="border-0 shadow-sm ring-1 ring-border/80">
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2 text-lg">
                       <UserRound className="size-4 text-primary" />
@@ -435,7 +605,7 @@ export function DpoRequestDetail({
                       </Button>
                     </form>
                   </CardContent>
-                </Card>
+                </Card>}
 
                 <Card className="border-0 shadow-sm ring-1 ring-border/80">
                   <CardHeader>
@@ -465,7 +635,10 @@ export function DpoRequestDetail({
                                 ? { resolution_status: resolutionStatus }
                                 : {}),
                               ...(action === "request_legal_review"
-                                ? { proposed_outcome: proposedOutcome }
+                                ? {
+                                    proposed_outcome: proposedOutcome,
+                                    assigned_reviewer: assignedReviewer.trim(),
+                                  }
                                 : {}),
                               ...(action === "close_as_duplicate"
                                 || action === "mark_for_duplicate"
@@ -508,7 +681,7 @@ export function DpoRequestDetail({
                               {resolutions.map(([value, label]) => {
                                 const requiresReview =
                                   data.request.independent_review_required ||
-                                  value !== "FULFILLED";
+                                  ["PARTIALLY_FULFILLED", "REJECTED", "RETAINED"].includes(value);
                                 return !data.request.legal_review_completed &&
                                   requiresReview
                                   ? null
@@ -545,6 +718,19 @@ export function DpoRequestDetail({
                             <p className="text-xs text-muted-foreground">
                               Review is bound to the latest unpublished response version and current case evidence.
                             </p>
+                            <label htmlFor="assigned-reviewer" className="text-sm font-medium">
+                              Independent Reviewer ID
+                            </label>
+                            <Input
+                              id="assigned-reviewer"
+                              required
+                              value={assignedReviewer}
+                              onChange={(event) => setAssignedReviewer(event.target.value)}
+                              maxLength={128}
+                              pattern="[A-Za-z0-9_.:-]{1,128}"
+                              placeholder="e.g. mock-independent-reviewer"
+                              disabled={saving}
+                            />
                           </>
                         )}
                         {(action === "close_as_duplicate" || action === "mark_for_duplicate") && (
@@ -584,6 +770,7 @@ export function DpoRequestDetail({
                           disabled={
                             saving ||
                             !action ||
+                            (action === "request_legal_review" && !assignedReviewer.trim()) ||
                             (["close_as_duplicate", "mark_for_duplicate"].includes(action) && !duplicateOf)
                           }
                           className="gap-2"
@@ -631,6 +818,33 @@ export function DpoRequestDetail({
                 )}
               </CardContent>
             </Card>
+
+            {data.review_material && (
+              <Card className="border-primary/30 shadow-sm ring-1 ring-primary/15">
+                <CardHeader>
+                  <CardTitle className="text-lg">Assigned review material</CardTitle>
+                  <CardDescription>
+                    Review the exact version and snapshot assigned to you. Case changes invalidate approval.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-sm font-medium">
+                    Response version {data.review_material.response_version}
+                  </p>
+                  <pre className="whitespace-pre-wrap rounded-lg bg-muted p-4 text-sm leading-6">
+                    {data.review_material.response_content}
+                  </pre>
+                  <details>
+                    <summary className="cursor-pointer text-sm font-medium">
+                      Evidence snapshot
+                    </summary>
+                    <pre className="mt-3 overflow-x-auto rounded-lg bg-muted p-4 text-xs">
+                      {JSON.stringify(data.review_material.case_snapshot, null, 2)}
+                    </pre>
+                  </details>
+                </CardContent>
+              </Card>
+            )}
 
             <Card className="border-0 shadow-sm ring-1 ring-border/80">
               <CardHeader>
@@ -710,7 +924,243 @@ export function DpoRequestDetail({
               </CardContent>
             </Card>
 
-            <Card className="border-0 shadow-sm ring-1 ring-border/80">
+            {role === "dpo" && (
+              <>
+                {data.request.case_stage === "INTAKE" && (
+                  <Card className="border-0 shadow-sm ring-1 ring-border/80">
+                    <CardHeader>
+                      <CardTitle className="text-lg">Intake jurisdiction</CardTitle>
+                      <CardDescription>
+                        Select the applicable jurisdiction during intake. The request will retain the exact
+                        deadline-policy version and calculated dates selected here.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <form onSubmit={(event) => void updateJurisdiction(event)} className="space-y-3">
+                        <label htmlFor="case-jurisdiction" className="text-sm font-medium">
+                          Jurisdiction code
+                        </label>
+                        <Input
+                          id="case-jurisdiction"
+                          value={jurisdictionCode}
+                          maxLength={8}
+                          pattern="[A-Z]{2,8}"
+                          required
+                          onChange={(event) => setJurisdictionCode(event.target.value.toUpperCase())}
+                        />
+                        <Textarea
+                          value={jurisdictionReason}
+                          onChange={(event) => setJurisdictionReason(event.target.value)}
+                          placeholder="Reason for assigning this jurisdiction"
+                          required
+                          maxLength={2000}
+                        />
+                        <Button type="submit" disabled={saving || !jurisdictionReason.trim()}>
+                          Save intake jurisdiction
+                        </Button>
+                      </form>
+                    </CardContent>
+                  </Card>
+                )}
+
+                <Card className="border-0 shadow-sm ring-1 ring-border/80">
+                  <CardHeader>
+                    <CardTitle className="text-lg">Parallel work items</CardTitle>
+                    <CardDescription>
+                      Searches, privacy review, legal/management input, and response work can be assigned
+                      independently and run in any order. Required items gate response finalization.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-5">
+                    {data.work_items.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No parallel work items have been assigned.</p>
+                    ) : (
+                      <ul className="space-y-3">
+                        {data.work_items.map((item) => (
+                          <li key={item.id} className="rounded-lg border p-4">
+                            <p className="font-medium">{item.title}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {item.task_type.replaceAll("_", " ")} · {item.status}
+                              {item.assigned_to ? ` · assigned to ${item.assigned_to}` : " · unassigned"}
+                              {item.required_for_completion ? " · required before response" : ""}
+                              {item.due_at ? ` · due ${formatDate(item.due_at)}` : ""}
+                            </p>
+                            {item.details && <p className="mt-2 whitespace-pre-wrap text-sm">{item.details}</p>}
+                            {item.completion_summary && (
+                              <p className="mt-2 text-sm text-muted-foreground">
+                                Outcome: {item.completion_summary}
+                              </p>
+                            )}
+                            <form
+                              className="mt-3 grid gap-3 sm:grid-cols-[200px_1fr_auto]"
+                              onSubmit={(event) => void updateWorkItem(event, item.id)}
+                            >
+                              <select
+                                name="status"
+                                defaultValue={item.status.toUpperCase().replaceAll(" ", "_")}
+                                className="h-10 rounded-lg border border-input bg-white px-3 text-sm"
+                              >
+                                {workStatuses.map(([code, label]) => (
+                                  <option key={code} value={code}>{label}</option>
+                                ))}
+                              </select>
+                              <Input
+                                name="completion_summary"
+                                defaultValue={item.completion_summary}
+                                placeholder="Completion summary (required to complete)"
+                                maxLength={4000}
+                              />
+                              <Button type="submit" variant="outline" disabled={taskSaving}>
+                                Update
+                              </Button>
+                            </form>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <form onSubmit={(event) => void createWorkItem(event)} className="grid gap-3 border-t pt-5 sm:grid-cols-2">
+                      <Input
+                        value={taskTitle}
+                        onChange={(event) => setTaskTitle(event.target.value)}
+                        placeholder="Work item title"
+                        maxLength={160}
+                        required
+                      />
+                      <select
+                        value={taskType}
+                        onChange={(event) => setTaskType(event.target.value as typeof taskType)}
+                        className="h-10 rounded-lg border border-input bg-white px-3 text-sm"
+                      >
+                        {workTypes.map(([code, label]) => (
+                          <option key={code} value={code}>{label}</option>
+                        ))}
+                      </select>
+                      <Input
+                        value={taskAssignee}
+                        onChange={(event) => setTaskAssignee(event.target.value)}
+                        placeholder="Assigned Department Contributor ID"
+                        maxLength={128}
+                        pattern="[A-Za-z0-9_.:-]{0,128}"
+                      />
+                      <Input
+                        type="datetime-local"
+                        value={taskDueAt}
+                        onChange={(event) => setTaskDueAt(event.target.value)}
+                        aria-label="Work item due date"
+                      />
+                      <Textarea
+                        value={taskDetails}
+                        onChange={(event) => setTaskDetails(event.target.value)}
+                        placeholder="Instructions and expected evidence summary"
+                        maxLength={4000}
+                        className="sm:col-span-2"
+                      />
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={taskRequired}
+                          onChange={(event) => setTaskRequired(event.target.checked)}
+                        />
+                        Required before response finalization
+                      </label>
+                      <Button type="submit" disabled={taskSaving || !taskTitle.trim()}>
+                        {taskSaving ? "Saving…" : "Add parallel work item"}
+                      </Button>
+                    </form>
+                  </CardContent>
+                </Card>
+
+                <Card className="border-0 shadow-sm ring-1 ring-border/80">
+                  <CardHeader>
+                    <CardTitle className="text-lg">Intake exceptions and deadline actions</CardTitle>
+                    <CardDescription>
+                      Record the rationale and patient notice. Deadline changes are permitted only when
+                      the case&apos;s versioned jurisdiction policy authorizes them.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {data.exceptions.length > 0 && (
+                      <ul className="space-y-2">
+                        {data.exceptions.map((item) => (
+                          <li key={item.id} className="rounded-lg border p-3 text-sm">
+                            <p className="font-medium">{item.exception_type}</p>
+                            <p className="mt-1">{item.reason}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Recorded by {item.actor_id} · {formatDate(item.created_at)}
+                              {item.deadline_effect_seconds
+                                ? ` · deadline effect ${Math.round(item.deadline_effect_seconds / 86400)} days`
+                                : ""}
+                            </p>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <form onSubmit={(event) => void createException(event)} className="space-y-3">
+                      <select
+                        value={exceptionType}
+                        onChange={(event) => setExceptionType(event.target.value)}
+                        className="h-10 w-full rounded-lg border border-input bg-white px-3 text-sm"
+                      >
+                        <option value="CLARIFICATION">Clarification required</option>
+                        <option value="OUT_OF_SCOPE">Out of scope</option>
+                        <option value="UNABLE_TO_PROCESS">Unable to process</option>
+                        <option value="EXTENSION">Authorized deadline extension</option>
+                        <option value="DEADLINE_PAUSE">Authorized deadline pause</option>
+                      </select>
+                      <Textarea
+                        value={exceptionReason}
+                        onChange={(event) => setExceptionReason(event.target.value)}
+                        placeholder="Reason and applicable policy basis"
+                        required
+                        maxLength={4000}
+                      />
+                      {(exceptionType === "EXTENSION" || exceptionType === "DEADLINE_PAUSE") && (
+                        <Input
+                          type="number"
+                          min={1}
+                          max={3650}
+                          value={deadlineEffectDays}
+                          onChange={(event) => setDeadlineEffectDays(event.target.value)}
+                          placeholder="Authorized deadline adjustment in days"
+                          required
+                        />
+                      )}
+                      {exceptionType === "DEADLINE_PAUSE" && (
+                        <Input
+                          value={exceptionPolicyReason}
+                          onChange={(event) => setExceptionPolicyReason(event.target.value)}
+                          placeholder="Exact reason authorized by this policy"
+                          required
+                          maxLength={120}
+                        />
+                      )}
+                      <Textarea
+                        value={patientNotification}
+                        onChange={(event) => setPatientNotification(event.target.value)}
+                        placeholder="Patient-facing notice (required for intake/clock exceptions)"
+                        required
+                        maxLength={4000}
+                      />
+                      <Button
+                        type="submit"
+                        disabled={
+                          exceptionSaving ||
+                          !exceptionReason.trim() ||
+                          !patientNotification.trim() ||
+                          (exceptionType === "DEADLINE_PAUSE" && !exceptionPolicyReason.trim()) ||
+                          ((exceptionType === "EXTENSION" || exceptionType === "DEADLINE_PAUSE") &&
+                            !deadlineEffectDays)
+                        }
+                      >
+                        {exceptionSaving ? "Saving…" : "Record exception"}
+                      </Button>
+                    </form>
+                  </CardContent>
+                </Card>
+              </>
+            )}
+
+            {role === "dpo" && <Card className="border-0 shadow-sm ring-1 ring-border/80">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <History className="size-4 text-primary" />
@@ -749,7 +1199,7 @@ export function DpoRequestDetail({
                   </ol>
                 )}
               </CardContent>
-            </Card>
+            </Card>}
           </>
         )}
       </div>

@@ -41,7 +41,9 @@ function parseToken(token: string | undefined): DemoSession | null {
     if (
       (session.role !== "patient" &&
         session.role !== "dpo" &&
-        session.role !== "admin") ||
+        session.role !== "admin" &&
+        session.role !== "department_contributor" &&
+        session.role !== "independent_reviewer") ||
       typeof session.principalId !== "string" ||
       !/^[A-Za-z0-9_.:-]{1,128}$/.test(session.principalId)
     ) {
@@ -64,7 +66,13 @@ export function createSessionToken(session: DemoSession): string {
 }
 
 export function isDemoRole(value: unknown): value is DemoRole {
-  return value === "patient" || value === "dpo" || value === "admin";
+  return (
+    value === "patient" ||
+    value === "dpo" ||
+    value === "admin" ||
+    value === "department_contributor" ||
+    value === "independent_reviewer"
+  );
 }
 
 export function sessionCookieOptions() {

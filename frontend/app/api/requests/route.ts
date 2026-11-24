@@ -16,6 +16,15 @@ export async function GET(request: Request) {
       { status: 403 },
     );
   }
+  if (
+    session.role !== "patient" &&
+    session.role !== "dpo"
+  ) {
+    return NextResponse.json(
+      { detail: "Use your assigned-work workspace." },
+      { status: 403 },
+    );
+  }
 
   const path =
     session.role === "patient"

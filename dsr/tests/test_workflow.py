@@ -203,6 +203,9 @@ class DSRApiTests(TestCase):
 
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(detail.data["request"]["id"], request.pk)
+        self.assertEqual(detail.data["work_items"], [])
+        self.assertEqual(detail.data["escalations"], [])
+        self.assertEqual(detail.data["exceptions"], [])
         self.assertIn(
             {
                 "label": "Start departmental search",
@@ -355,6 +358,7 @@ class DSRApiTests(TestCase):
                 "action": "request_legal_review",
                 "reason": "Review the refusal.",
                 "proposed_outcome": DSRRequest.ResolutionStatus.REJECTED,
+                "assigned_reviewer": "independent-reviewer",
             },
             format="json",
         )
@@ -369,8 +373,8 @@ class DSRApiTests(TestCase):
             },
             format="json",
         )
-        self.assertEqual(same_person_approval.status_code, 409)
-        self.client.credentials(HTTP_AUTHORIZATION="Bearer dpo:independent-reviewer")
+        self.assertEqual(same_person_approval.status_code, 403)
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer independent_reviewer:independent-reviewer")
         legal_approval = self.client.post(
             f"/api/v1/dpo/dsrs/{request.pk}/transition/",
             {
@@ -438,6 +442,7 @@ class DSRApiTests(TestCase):
                 "action": "request_legal_review",
                 "reason": "Please independently review this response.",
                 "proposed_outcome": DSRRequest.ResolutionStatus.FULFILLED,
+                "assigned_reviewer": "reviewer-1",
             },
             format="json",
         )
@@ -458,7 +463,7 @@ class DSRApiTests(TestCase):
             format="json",
         )
         self.assertEqual(changed_decision.status_code, 201)
-        self.client.credentials(HTTP_AUTHORIZATION="Bearer dpo:reviewer-1")
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer independent_reviewer:reviewer-1")
         stale_approval = self.client.post(
             f"/api/v1/dpo/dsrs/{request.pk}/transition/",
             {
@@ -491,11 +496,12 @@ class DSRApiTests(TestCase):
                 "action": "request_legal_review",
                 "reason": "Review the updated response and evidence.",
                 "proposed_outcome": DSRRequest.ResolutionStatus.FULFILLED,
+                "assigned_reviewer": "reviewer-2",
             },
             format="json",
         )
         self.assertEqual(second_review.status_code, 200)
-        self.client.credentials(HTTP_AUTHORIZATION="Bearer dpo:reviewer-2")
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer independent_reviewer:reviewer-2")
         approval = self.client.post(
             f"/api/v1/dpo/dsrs/{request.pk}/transition/",
             {
@@ -625,6 +631,27 @@ class DSRApiTests(TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         request = DSRRequest.objects.get(pk=request.pk)
         self.assertEqual(request.state, DSRRequest.State.PRIVACY_REVIEW)
+        transition_count = DSRAuditLog.objects.filter(
+            dsr=request,
+            from_state=DSRRequest.State.DEPT_SEARCH,
+            to_state=DSRRequest.State.PRIVACY_REVIEW,
+        ).count()
+
+        repeated = self.client.post(
+            f"/api/v1/dpo/dsrs/{request.pk}/transition/",
+            {"action": "send_to_privacy_review", "reason": "Retry"},
+            format="json",
+        )
+
+        self.assertEqual(repeated.status_code, 200, repeated.data)
+        self.assertEqual(
+            DSRAuditLog.objects.filter(
+                dsr=request,
+                from_state=DSRRequest.State.DEPT_SEARCH,
+                to_state=DSRRequest.State.PRIVACY_REVIEW,
+            ).count(),
+            transition_count,
+        )
 
     def test_data_collection_task_ignores_duplicate_delivery_after_transition(self) -> None:
         request = self.create_request(state=DSRRequest.State.DEPT_SEARCH)
@@ -1356,6 +1383,7 @@ class DSRApiTests(TestCase):
                 "action": "request_legal_review",
                 "reason": "Review partial outcome.",
                 "proposed_outcome": DSRRequest.ResolutionStatus.PARTIALLY_FULFILLED,
+                "assigned_reviewer": "independent-reviewer",
             },
             format="json",
         )
@@ -1368,8 +1396,8 @@ class DSRApiTests(TestCase):
             },
             format="json",
         )
-        self.assertEqual(legal_review_approved.status_code, 409)
-        self.client.credentials(HTTP_AUTHORIZATION="Bearer dpo:independent-reviewer")
+        self.assertEqual(legal_review_approved.status_code, 403)
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer independent_reviewer:independent-reviewer")
         legal_review_approved = self.client.post(
             f"/api/v1/dpo/dsrs/{request.pk}/transition/",
             {

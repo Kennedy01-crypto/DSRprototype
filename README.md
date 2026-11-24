@@ -104,11 +104,11 @@ These tokens stand in for an upstream identity system that has already verified 
 
 4. Access the Next.js UI at:
 
-   `http://localhost:3000`
+   `http://localhost:3002`
 
 5. The Django API and existing browser workspace remain available at:
 
-   `http://localhost:8000`
+   `http://localhost:8002`
 
 The new UI starts with a mock role/ID sign-in, a patient request list and submission form, and a DPO queue with filters and workload indicators. The DPO case-detail workflows remain in the existing Django workspace during this first frontend phase. The frontend calls the Django API through same-origin Next.js route handlers; its signed HttpOnly demo session does not authenticate real users. Configure `NEXT_MOCK_SESSION_SECRET` in `.env` for local use. Keep `web` in `DJANGO_ALLOWED_HOSTS` so the frontend container can reach Django using its Compose service name. Internal target defaults are demonstration policy only; legal deadlines remain unset until configured by a DPO. See [API_README.md](API_README.md) for the backend browser and API routes, request examples, and workflow actions. The web container runs database migrations automatically on startup.
 

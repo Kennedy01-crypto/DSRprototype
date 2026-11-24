@@ -7,7 +7,7 @@ from datetime import timedelta
 from django.db import models
 from django.utils import timezone
 from django.core.validators import MaxValueValidator, MinValueValidator
-from django_fsm import FSMField, TransitionNotAllowed, transition
+from django_fsm import RETURN_VALUE, FSMField, TransitionNotAllowed, transition
 
 
 class DSRRequest(models.Model):
@@ -41,6 +41,8 @@ class DSRRequest(models.Model):
         REJECTED = "REJECTED", "Rejected"
         WITHDRAWN = "WITHDRAWN", "Withdrawn"
         DUPLICATE = "DUPLICATE", "Duplicate"
+        OUT_OF_SCOPE = "OUT_OF_SCOPE", "Out of scope"
+        UNABLE_TO_PROCESS = "UNABLE_TO_PROCESS", "Unable to process"
 
     patient_id = models.CharField(max_length=128, db_index=True)
     request_type = models.CharField(max_length=32, choices=RequestType.choices)
@@ -57,11 +59,20 @@ class DSRRequest(models.Model):
         choices=ResolutionStatus.choices,
         default=ResolutionStatus.OPEN,
     )
+    jurisdiction_code = models.CharField(max_length=8, default="KE")
+    deadline_policy = models.ForeignKey(
+        "dsr.DSRDeadlinePolicy",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="requests",
+    )
     legal_review_completed = models.BooleanField(default=False)
     independent_review_required = models.BooleanField(default=False)
     independent_review_reason = models.TextField(blank=True)
     assigned_to = models.CharField(max_length=128, blank=True)
     escalated_from = models.CharField(max_length=32, blank=True)
+    waiting_from_state = models.CharField(max_length=32, blank=True)
     submitted_at = models.DateTimeField(auto_now_add=True)
     response_due_at = models.DateTimeField()
     legal_deadline_at = models.DateTimeField(null=True, blank=True)
@@ -87,22 +98,37 @@ class DSRRequest(models.Model):
         ordering = ("-submitted_at",)
 
     def save(self, *args: object, **kwargs: object) -> None:
+        if self._state.adding and self.deadline_policy_id is None:
+            self.deadline_policy = DSRDeadlinePolicy.objects.filter(
+                request_type=self.request_type,
+                jurisdiction_code=self.jurisdiction_code,
+                effective_at__lte=timezone.now(),
+            ).order_by("-version").first()
+            if self.deadline_policy is None:
+                raise DSRDeadlinePolicy.DoesNotExist(
+                    "No effective deadline policy is configured for this jurisdiction and request type."
+                )
         if self.response_due_at is None:
             submitted_at = self.submitted_at or timezone.now()
             self.response_due_at = submitted_at + self.sla_duration()
         if self._state.adding and self.legal_deadline_at is None:
-            policy = DSRDeadlinePolicy.objects.filter(
-                request_type=self.request_type
-            ).first()
-            if policy and policy.legal_deadline_days is not None:
+            if self.deadline_policy.legal_deadline_days is not None:
                 submitted_at = self.submitted_at or timezone.now()
                 self.legal_deadline_at = submitted_at + timedelta(
-                    days=policy.legal_deadline_days
+                    days=self.deadline_policy.legal_deadline_days
                 )
         super().save(*args, **kwargs)
 
     def sla_duration(self) -> timedelta:
-        policy = DSRDeadlinePolicy.objects.get(request_type=self.request_type)
+        policy = self.deadline_policy or DSRDeadlinePolicy.objects.filter(
+            request_type=self.request_type,
+            jurisdiction_code=self.jurisdiction_code,
+            effective_at__lte=timezone.now(),
+        ).order_by("-version").first()
+        if policy is None:
+            raise DSRDeadlinePolicy.DoesNotExist(
+                "No effective deadline policy is configured for this jurisdiction and request type."
+            )
         return timedelta(days=policy.internal_target_days)
 
     def time_remaining(self) -> timedelta:
@@ -121,8 +147,35 @@ class DSRRequest(models.Model):
         return "In Progress"
 
     @property
+    def case_stage(self) -> str:
+        if self.state == self.State.SUBMITTED:
+            return "INTAKE"
+        if self.state == self.State.RESPONSE_PREP:
+            return "RESPONSE_PREPARATION"
+        if self.major_status == "Completed":
+            return "COMPLETED"
+        if self.state == self.State.ESCALATED:
+            state_before_escalation = self.escalated_from
+            if state_before_escalation == self.State.RESPONSE_PREP:
+                return "RESPONSE_PREPARATION"
+        if self.state == self.State.NEEDS_INFORMATION:
+            if self.waiting_from_state == self.State.RESPONSE_PREP:
+                return "RESPONSE_PREPARATION"
+        return "PROCESSING"
+
+    @property
+    def escalation_active(self) -> bool:
+        return self.escalations.filter(resolved_at__isnull=True).exists()
+
+    @property
+    def waiting_for_subject_information(self) -> bool:
+        return self.state == self.State.NEEDS_INFORMATION
+
+    @property
     def workflow_substatus(self) -> str:
         if self.major_status == "Completed":
+            if self.resolution_status == self.ResolutionStatus.WITHDRAWN:
+                return "Withdrawn by the patient"
             if self.resolution_status == self.ResolutionStatus.RETAINED:
                 return self.ResolutionStatus.REJECTED.label
             return self.get_resolution_status_display()
@@ -316,6 +369,7 @@ class DSRRequest(models.Model):
     @transition(
         field=state,
         source=[
+            State.SUBMITTED,
             State.ACCEPTED,
             State.DEPT_SEARCH,
             State.PRIVACY_REVIEW,
@@ -325,27 +379,59 @@ class DSRRequest(models.Model):
         target=State.NEEDS_INFORMATION,
     )
     def request_information(self, *, actor_id: str, reason: str) -> None:
+        self.waiting_from_state = self.state
         self._set_transition_context(actor_id, reason)
 
-    @transition(field=state, source=State.NEEDS_INFORMATION, target=State.ACCEPTED)
-    def provide_information(self, *, actor_id: str, reason: str) -> None:
-        self._set_transition_context(actor_id, reason)
+    # Stages a case can return to after waiting for the subject or after an
+    # escalation. Resuming goes back to the stage the case left so that work
+    # already done (searches, review, response drafting) is not repeated.
+    # Records without a valid saved stage fall back to ACCEPTED.
+    INFORMATION_RETURN_STATES = (
+        State.SUBMITTED,
+        State.ACCEPTED,
+        State.DEPT_SEARCH,
+        State.PRIVACY_REVIEW,
+        State.LEGAL_REVIEW,
+        State.RESPONSE_PREP,
+    )
+    ESCALATION_RETURN_STATES = (
+        State.ACCEPTED,
+        State.DEPT_SEARCH,
+        State.PRIVACY_REVIEW,
+        State.LEGAL_REVIEW,
+        State.RESPONSE_PREP,
+        State.NEEDS_INFORMATION,
+    )
 
-    @transition(field=state, source=State.ESCALATED, target=State.ACCEPTED)
-    def resume_escalated(self, *, actor_id: str, reason: str) -> None:
+    @transition(
+        field=state,
+        source=State.NEEDS_INFORMATION,
+        target=RETURN_VALUE(*INFORMATION_RETURN_STATES),
+    )
+    def provide_information(self, *, actor_id: str, reason: str) -> str:
         self._set_transition_context(actor_id, reason)
-        self.escalated_from = ""
+        target = (
+            self.waiting_from_state
+            if self.waiting_from_state in self.INFORMATION_RETURN_STATES
+            else self.State.ACCEPTED
+        )
+        self.waiting_from_state = ""
+        return target
 
     @transition(
         field=state,
         source=State.ESCALATED,
-        target=State.NEEDS_INFORMATION,
+        target=RETURN_VALUE(*ESCALATION_RETURN_STATES),
     )
-    def resume_escalated_waiting_for_information(
-        self, *, actor_id: str, reason: str
-    ) -> None:
+    def resume_escalated(self, *, actor_id: str, reason: str) -> str:
         self._set_transition_context(actor_id, reason)
+        target = (
+            self.escalated_from
+            if self.escalated_from in self.ESCALATION_RETURN_STATES
+            else self.State.ACCEPTED
+        )
         self.escalated_from = ""
+        return target
 
     @transition(field=state, source=State.DEPT_SEARCH, target=State.PRIVACY_REVIEW)
     def send_to_privacy_review(self, *, actor_id: str, reason: str = "") -> None:
@@ -516,8 +602,10 @@ class DSRDeadlinePolicy(models.Model):
     request_type = models.CharField(
         max_length=32,
         choices=DSRRequest.RequestType.choices,
-        unique=True,
     )
+    jurisdiction_code = models.CharField(max_length=8, default="KE")
+    version = models.PositiveIntegerField(default=1)
+    effective_at = models.DateTimeField(default=timezone.now)
     internal_target_days = models.PositiveSmallIntegerField(
         validators=(MinValueValidator(1), MaxValueValidator(3650))
     )
@@ -526,11 +614,28 @@ class DSRDeadlinePolicy(models.Model):
         blank=True,
         validators=(MinValueValidator(1), MaxValueValidator(3650)),
     )
+    policy_source = models.CharField(max_length=255, blank=True)
+    clock_start_event = models.CharField(max_length=32, default="SUBMITTED")
+    calendar_days = models.BooleanField(default=True)
+    extension_allowed = models.BooleanField(default=False)
+    maximum_extension_days = models.PositiveSmallIntegerField(default=0)
+    pause_allowed = models.BooleanField(default=False)
+    pause_reasons = models.JSONField(default=list, blank=True)
+    notification_required = models.BooleanField(default=True)
     updated_by = models.CharField(max_length=128, blank=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    updated_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ("request_type",)
+        ordering = ("jurisdiction_code", "request_type", "-version")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("jurisdiction_code", "request_type", "version"),
+                name="unique_deadline_policy_version",
+            )
+        ]
+
+    def save(self, *args: object, **kwargs: object) -> None:
+        super().save(*args, **kwargs)
 
 
 class DSRDeadlinePolicyAudit(models.Model):
@@ -550,6 +655,91 @@ class DSRDeadlinePolicyAudit(models.Model):
     def save(self, *args: object, **kwargs: object) -> None:
         if self.pk is not None:
             raise ValueError("Deadline policy audit entries are append-only")
+        super().save(*args, **kwargs)
+
+
+class DSRCaseDisposition(models.Model):
+    class Initiator(models.TextChoices):
+        PATIENT = "PATIENT", "Patient"
+        ORGANIZATION = "ORGANIZATION", "Organization"
+
+    dsr = models.OneToOneField(
+        DSRRequest,
+        on_delete=models.PROTECT,
+        related_name="disposition",
+    )
+    outcome = models.CharField(
+        max_length=32,
+        choices=DSRRequest.ResolutionStatus.choices,
+    )
+    initiated_by = models.CharField(max_length=16, choices=Initiator.choices)
+    actor_id = models.CharField(max_length=128)
+    reason = models.TextField(blank=True)
+    communicated_at = models.DateTimeField(null=True, blank=True)
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("recorded_at", "pk")
+
+    def save(self, *args: object, **kwargs: object) -> None:
+        if self.pk is not None:
+            raise ValueError("Case dispositions are append-only")
+        super().save(*args, **kwargs)
+
+
+class DSRCaseEscalation(models.Model):
+    dsr = models.ForeignKey(
+        DSRRequest,
+        on_delete=models.PROTECT,
+        related_name="escalations",
+    )
+    reason = models.TextField()
+    opened_by = models.CharField(max_length=128)
+    assigned_to = models.CharField(max_length=128, blank=True)
+    due_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_by = models.CharField(max_length=128, blank=True)
+    resolution = models.TextField(blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("-created_at", "-pk")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("dsr",),
+                condition=models.Q(resolved_at__isnull=True),
+                name="one_active_escalation_per_dsr",
+            )
+        ]
+
+
+class DSRCaseException(models.Model):
+    class ExceptionType(models.TextChoices):
+        CLARIFICATION = "CLARIFICATION", "Clarification required"
+        OUT_OF_SCOPE = "OUT_OF_SCOPE", "Out of scope"
+        UNABLE_TO_PROCESS = "UNABLE_TO_PROCESS", "Unable to process"
+        EXTENSION = "EXTENSION", "Deadline extension"
+        DEADLINE_PAUSE = "DEADLINE_PAUSE", "Deadline pause"
+
+    dsr = models.ForeignKey(
+        DSRRequest,
+        on_delete=models.PROTECT,
+        related_name="exceptions",
+    )
+    exception_type = models.CharField(max_length=24, choices=ExceptionType.choices)
+    reason = models.TextField()
+    policy_reason = models.CharField(max_length=120, blank=True)
+    actor_id = models.CharField(max_length=128)
+    patient_notified_at = models.DateTimeField(null=True, blank=True)
+    deadline_effect_seconds = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("created_at", "pk")
+
+    def save(self, *args: object, **kwargs: object) -> None:
+        if self.pk is not None:
+            raise ValueError("Case exception records are append-only")
         super().save(*args, **kwargs)
 
 
@@ -573,6 +763,10 @@ class DSRAuditLog(models.Model):
 class DSRCaseEvent(models.Model):
     class EventType(models.TextChoices):
         ASSIGNED = "ASSIGNED", "Assigned"
+        JURISDICTION_POLICY_ASSIGNED = (
+            "JURISDICTION_POLICY_ASSIGNED",
+            "Jurisdiction policy assigned",
+        )
         INDEPENDENT_REVIEW_REQUIRED = (
             "INDEPENDENT_REVIEW_REQUIRED",
             "Independent review required",
@@ -589,6 +783,7 @@ class DSRCaseEvent(models.Model):
         RESPONSE_FINALIZED = "RESPONSE_FINALIZED", "Response finalized"
         RESPONSE_PUBLISHED = "RESPONSE_PUBLISHED", "Response published to portal"
         DEADLINE_OVERDUE = "DEADLINE_OVERDUE", "Deadline passed"
+        EXCEPTION_RECORDED = "EXCEPTION_RECORDED", "Case exception recorded"
 
     dsr = models.ForeignKey(DSRRequest, on_delete=models.PROTECT, related_name="events")
     actor_id = models.CharField(max_length=128)
@@ -606,6 +801,13 @@ class DSRCaseEvent(models.Model):
 
 
 class DSRReviewTask(models.Model):
+    class TaskType(models.TextChoices):
+        DEPARTMENT_SEARCH = "DEPARTMENT_SEARCH", "Departmental search"
+        PRIVACY_REVIEW = "PRIVACY_REVIEW", "Privacy review"
+        LEGAL_MANAGEMENT = "LEGAL_MANAGEMENT", "Legal / management input"
+        RESPONSE_PREPARATION = "RESPONSE_PREPARATION", "Response preparation"
+        OTHER = "OTHER", "Other"
+
     class Status(models.TextChoices):
         OPEN = "OPEN", "Open"
         IN_PROGRESS = "IN_PROGRESS", "In progress"
@@ -614,8 +816,16 @@ class DSRReviewTask(models.Model):
 
     dsr = models.ForeignKey(DSRRequest, on_delete=models.PROTECT, related_name="review_tasks")
     title = models.CharField(max_length=160)
+    task_type = models.CharField(
+        max_length=24,
+        choices=TaskType.choices,
+        default=TaskType.OTHER,
+    )
     details = models.TextField(blank=True)
     assigned_to = models.CharField(max_length=128, blank=True)
+    due_at = models.DateTimeField(null=True, blank=True)
+    required_for_completion = models.BooleanField(default=False)
+    completion_summary = models.TextField(blank=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
     created_by = models.CharField(max_length=128)
     updated_by = models.CharField(max_length=128)
@@ -635,6 +845,8 @@ class DSRDecision(models.Model):
         REJECTED = "REJECTED", "Rejected"
         WITHDRAWN = "WITHDRAWN", "Withdrawn"
         DUPLICATE = "DUPLICATE", "Duplicate"
+        OUT_OF_SCOPE = "OUT_OF_SCOPE", "Out of scope"
+        UNABLE_TO_PROCESS = "UNABLE_TO_PROCESS", "Unable to process"
         FURTHER_REVIEW = "FURTHER_REVIEW", "Further review required"
 
     dsr = models.ForeignKey(DSRRequest, on_delete=models.PROTECT, related_name="decisions")
@@ -660,6 +872,7 @@ class DSRLegalReviewRequest(models.Model):
         related_name="legal_review_requests",
     )
     requested_by = models.CharField(max_length=128)
+    assigned_reviewer = models.CharField(max_length=128, blank=True)
     request_reason = models.TextField()
     proposed_outcome = models.CharField(
         max_length=32,

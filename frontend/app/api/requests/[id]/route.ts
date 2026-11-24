@@ -30,6 +30,14 @@ async function getSession() {
       ),
     };
   }
+  if (session.role === "department_contributor") {
+    return {
+      response: NextResponse.json(
+        { detail: "Use the assigned-work workspace to access department tasks." },
+        { status: 403 },
+      ),
+    };
+  }
   return { session };
 }
 
@@ -66,11 +74,8 @@ export async function GET(_request: Request, context: RouteContext) {
   if (id === null) {
     return NextResponse.json({ detail: "Invalid request reference." }, { status: 400 });
   }
-  const path =
-    session.role === "dpo"
-      ? `/api/v1/dpo/dsrs/${id}/`
-      : `/api/v1/dsrs/${id}/`;
   if (session.role === "patient") {
+    const path = `/api/v1/dsrs/${id}/`;
     try {
       const [requestResponse, communicationResponse, publishedResponse] =
         await Promise.all([
@@ -108,6 +113,7 @@ export async function GET(_request: Request, context: RouteContext) {
       );
     }
   }
+  const path = `/api/v1/dpo/dsrs/${id}/`;
   return proxyRequest(path, session, "GET");
 }
 
@@ -146,8 +152,18 @@ export async function POST(request: Request, context: RouteContext) {
   } catch {
     return NextResponse.json({ detail: "Invalid JSON body." }, { status: 400 });
   }
+  if (
+    session.role !== "dpo" &&
+    session.role !== "independent_reviewer" &&
+    session.role !== "patient"
+  ) {
+    return NextResponse.json(
+      { detail: "This workspace cannot apply case workflow actions." },
+      { status: 403 },
+    );
+  }
   const path =
-    session.role === "dpo"
+    session.role === "dpo" || session.role === "independent_reviewer"
       ? `/api/v1/dpo/dsrs/${id}/transition/`
       : `/api/v1/dsrs/${id}/withdraw/`;
   return proxyRequest(path, session, "POST", body);

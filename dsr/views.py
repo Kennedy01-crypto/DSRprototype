@@ -3,11 +3,12 @@ from __future__ import annotations
 import csv
 import re
 from datetime import datetime, timedelta
+from collections.abc import Mapping
 from typing import Callable
 
 from django.db import transaction
 from django.db.models import Q
-from django.http import HttpRequest, HttpResponse, QueryDict
+from django.http import Http404, HttpRequest, HttpResponse, QueryDict
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
@@ -19,8 +20,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .authentication import PatientPortalJWTAuthentication, SimulatedPrincipal
+from .permissions import RolePermission
 from .models import (
     DSRCaseEvent,
+    DSRCaseException,
     DSRCommunication,
     DSRDecision,
     DSRDeadlinePolicy,
@@ -36,11 +39,16 @@ from .models import (
 from .serializers import (
     DSRAssignmentSerializer,
     DSRCommunicationSerializer,
+    DSRCaseExceptionCreateSerializer,
+    DSRCaseExceptionReadSerializer,
+    DSRCaseEscalationReadSerializer,
+    DSRCaseExceptionReadSerializer,
     DSRDecisionSerializer,
     DSRCommunicationReadSerializer,
     DSRDecisionReadSerializer,
     DSRDeadlinePolicySerializer,
     DSRDeadlinePolicyUpdateSerializer,
+    DSRJurisdictionUpdateSerializer,
     DSRDPOStatusSerializer,
     DSRLegalReviewRequestReadSerializer,
     DSRReviewTaskSerializer,
@@ -73,6 +81,7 @@ OPEN_QUEUE_STATES = (*ACTIVE_STATES, DSRRequest.State.ESCALATED)
 TRANSITION_ACTIONS = {
     DSRRequest.State.SUBMITTED: (
         ("Begin processing", "start_departmental_search"),
+        ("Request more information", "request_information"),
         ("Flag for independent review", "flag_for_independent_review"),
         ("Mark as duplicate", "mark_for_duplicate"),
     ),
@@ -241,6 +250,11 @@ def _available_transition_actions(
     actor_id: str,
 ) -> tuple[tuple[str, str], ...]:
     actions = TRANSITION_ACTIONS.get(dsr.state, ())
+    actions = tuple(
+        action
+        for action in actions
+        if action[1] not in {"approve_legal_review", "return_from_legal_review"}
+    )
     if dsr.independent_review_required:
         actions = tuple(
             action
@@ -349,6 +363,10 @@ def _response_signoff_error(dsr: DSRRequest) -> str | None:
         and not dsr.source_searches_complete()
     ):
         return "Complete all mock source searches before finalizing a response."
+    if dsr.review_tasks.filter(
+        required_for_completion=True
+    ).exclude(status=DSRReviewTask.Status.COMPLETED).exists():
+        return "Complete all required work items before finalizing a response."
     latest_decision = dsr.decisions.order_by("-created_at", "-pk").first()
     if latest_decision is None or latest_decision.outcome == DSRDecision.Outcome.FURTHER_REVIEW:
         return "Record a final decision before finalizing a response."
@@ -461,7 +479,14 @@ def _apply_transition(
     resolution_status: str | None = None,
     proposed_outcome: str | None = None,
     duplicate_of_id: int | None = None,
+    assigned_reviewer: str = "",
 ) -> None:
+    if (
+        action_name == "send_to_privacy_review"
+        and dsr.state == DSRRequest.State.PRIVACY_REVIEW
+    ):
+        return
+
     if action_name in {"flag_for_independent_review", "mark_for_duplicate"}:
         if action_name == "flag_for_independent_review":
             dsr.flag_for_independent_review(reason=reason)
@@ -510,11 +535,6 @@ def _apply_transition(
         )
         return
 
-    if (
-        action_name == "resume_escalated"
-        and dsr.escalated_from == DSRRequest.State.NEEDS_INFORMATION
-    ):
-        action_name = "resume_escalated_waiting_for_information"
     review_request = None
     review_version = None
     if action_name == "request_legal_review":
@@ -531,6 +551,20 @@ def _apply_transition(
             raise TransitionNotAllowed(
                 "Finalize an unpublished response for the latest overall decision before requesting review."
             )
+        # Check reviewer independence now rather than only at approval time:
+        # a blank or conflicted reviewer would leave the case stuck in review.
+        assigned_reviewer = assigned_reviewer.strip()
+        if not assigned_reviewer:
+            raise TransitionNotAllowed("Assign an independent reviewer for this review.")
+        if assigned_reviewer in {
+            actor_id,
+            review_version.finalized_by,
+            dsr.assigned_to,
+        }:
+            raise TransitionNotAllowed(
+                "The independent reviewer cannot be the requester, the response author, "
+                "or the assigned case handler."
+            )
     if action_name in {"approve_legal_review", "return_from_legal_review"}:
         review_request = dsr.legal_review_requests.order_by("-pk").first()
         if review_request is None:
@@ -543,6 +577,7 @@ def _apply_transition(
             review_request.requested_by == actor_id
             or review_request.response_version.finalized_by == actor_id
             or (dsr.assigned_to and dsr.assigned_to == actor_id)
+            or review_request.assigned_reviewer != actor_id
         ):
             raise TransitionNotAllowed(
                 "The requester, response author, or assigned case handler cannot approve their own independent review."
@@ -578,17 +613,13 @@ def _apply_transition(
             )
         kwargs["duplicate_of"] = duplicate_of
     action(**kwargs)
-    if action_name in {
-        "resume_escalated",
-        "resume_escalated_waiting_for_information",
-    }:
-        dsr.escalated_from = ""
     dsr.save(
         update_fields=(
             "state",
             "resolution_status",
             "closed_at",
             "escalated_from",
+            "waiting_from_state",
             "duplicate_of",
             "legal_review_completed",
             "updated_at",
@@ -602,6 +633,7 @@ def _apply_transition(
             requested_by=actor_id,
             request_reason=reason,
             proposed_outcome=proposed_outcome or "",
+            assigned_reviewer=assigned_reviewer,
             response_version=review_version,
             case_snapshot=dsr.review_snapshot(review_version),
         )
@@ -799,7 +831,7 @@ def patient_home(request: HttpRequest) -> HttpResponse:
                             actor_id=patient_id,
                             reason="The subject provided requested information",
                         )
-                        dsr.save(update_fields=("state", "updated_at"))
+                        dsr.save(update_fields=("state", "waiting_from_state", "updated_at"))
                         return redirect("patient-home")
                 else:
                     errors = serializer.errors
@@ -1109,6 +1141,9 @@ def dpo_request_detail(request: HttpRequest, pk: int) -> HttpResponse:
                             duplicate_of_id=serializer.validated_data.get(
                                 "duplicate_of"
                             ),
+                            assigned_reviewer=serializer.validated_data.get(
+                                "assigned_reviewer", ""
+                            ),
                         )
                         return redirect("dpo-request", pk=dsr.pk)
                     except TransitionNotAllowed as error:
@@ -1150,13 +1185,28 @@ def dpo_request_detail(request: HttpRequest, pk: int) -> HttpResponse:
     )
 
 
-class PatientEndpoint(APIView):
+class RoleAPIView(APIView):
+    """Base for API views. ``RolePermission`` enforces ``allowed_roles``
+    before any handler runs, so handlers can rely on ``request.user`` being a
+    principal with one of those roles."""
+
     authentication_classes = (PatientPortalJWTAuthentication,)
+    permission_classes = (RolePermission,)
+    allowed_roles: frozenset[str] | Mapping[str, frozenset[str]] = frozenset()
+
+    def principal(self, request: Request) -> SimulatedPrincipal:
+        assert isinstance(request.user, SimulatedPrincipal)
+        return request.user
+
+    def principal_id(self, request: Request) -> str:
+        return self.principal(request).patient_id
+
+
+class PatientEndpoint(RoleAPIView):
+    allowed_roles = frozenset({"patient"})
 
     def _principal(self, request: Request) -> SimulatedPrincipal:
-        if not isinstance(request.user, SimulatedPrincipal) or request.user.role != "patient":
-            raise PermissionDenied("A patient portal identity is required")
-        return request.user
+        return self.principal(request)
 
 
 class SubmitDSRView(PatientEndpoint):
@@ -1190,27 +1240,81 @@ class PatientDSRDetailView(PatientEndpoint):
         )
 
 
-class DPOPermission:
-    @staticmethod
-    def check(request: Request) -> None:
-        if not isinstance(request.user, SimulatedPrincipal) or request.user.role != "dpo":
-            raise PermissionDenied("DPO role is required")
-
-
-class DPOAPIView(APIView):
-    authentication_classes = (PatientPortalJWTAuthentication,)
-
-    def principal_id(self, request: Request) -> str:
-        DPOPermission.check(request)
-        if not isinstance(request.user, SimulatedPrincipal):
-            raise PermissionDenied("DPO role is required")
-        return request.user.patient_id
+class DPOAPIView(RoleAPIView):
+    allowed_roles = frozenset({"dpo"})
 
 
 class DSRCaseDetailView(DPOAPIView):
+    allowed_roles = frozenset({"dpo", "independent_reviewer"})
+
     def get(self, request: Request, pk: int) -> Response:
         actor_id = self.principal_id(request)
         dsr = get_object_or_404(DSRRequest, pk=pk)
+        if request.user.role == "independent_reviewer":
+            review_request = dsr.legal_review_requests.filter(
+                assigned_reviewer=actor_id
+            ).order_by("-pk").first()
+            if (
+                review_request is None
+                or DSRLegalReviewDecision.objects.filter(
+                    review_request=review_request
+                ).exists()
+            ):
+                raise PermissionDenied("No independent review is assigned to this reviewer.")
+            latest_version = dsr.latest_response_version
+            unchanged = (
+                latest_version is not None
+                and review_request.response_version_id == latest_version.pk
+                and review_request.case_snapshot == dsr.review_snapshot(latest_version)
+            )
+            available_actions = [("Return for changes", "return_from_legal_review")]
+            if unchanged:
+                available_actions.insert(
+                    0, ("Approve independent review", "approve_legal_review")
+                )
+            return Response(
+                {
+                    "request": DSRDPOStatusSerializer(dsr).data,
+                    "activity": _case_activity(dsr),
+                    "communications": [],
+                    "legal_reviews": DSRLegalReviewRequestReadSerializer(
+                        [review_request], many=True
+                    ).data,
+                    "work_items": DSRReviewTaskReadSerializer(
+                        dsr.review_tasks.all(), many=True
+                    ).data,
+                    "escalations": DSRCaseEscalationReadSerializer(
+                        dsr.escalations.all(), many=True
+                    ).data,
+                    "exceptions": DSRCaseExceptionReadSerializer(
+                        dsr.exceptions.all(), many=True
+                    ).data,
+                    "review_material": {
+                        "response_version": review_request.response_version.version,
+                        "response_content": review_request.response_version.content,
+                        "case_snapshot": review_request.case_snapshot,
+                        "source_searches": DSRSourceSearchReadSerializer(
+                            dsr.source_searches.all(), many=True
+                        ).data,
+                        "decisions": DSRDecisionReadSerializer(
+                            dsr.decisions.all(), many=True
+                        ).data,
+                    },
+                    "available_actions": [
+                        {"label": label, "action": action}
+                        for label, action in available_actions
+                    ],
+                    "work_items": DSRReviewTaskReadSerializer(
+                        dsr.review_tasks.all(), many=True
+                    ).data,
+                    "escalations": DSRCaseEscalationReadSerializer(
+                        dsr.escalations.all(), many=True
+                    ).data,
+                    "exceptions": DSRCaseExceptionReadSerializer(
+                        dsr.exceptions.all(), many=True
+                    ).data,
+                }
+            )
         actions = _available_transition_actions(dsr, actor_id)
         return Response(
             {
@@ -1224,6 +1328,15 @@ class DSRCaseDetailView(DPOAPIView):
                         "response_version"
                     ).prefetch_related("decision"),
                     many=True,
+                ).data,
+                "work_items": DSRReviewTaskReadSerializer(
+                    dsr.review_tasks.all(), many=True
+                ).data,
+                "escalations": DSRCaseEscalationReadSerializer(
+                    dsr.escalations.all(), many=True
+                ).data,
+                "exceptions": DSRCaseExceptionReadSerializer(
+                    dsr.exceptions.all(), many=True
                 ).data,
                 "available_actions": [
                     {"label": label, "action": action}
@@ -1251,11 +1364,80 @@ class DSRAssignmentView(DPOAPIView):
         return Response(DSRDPOStatusSerializer(dsr).data)
 
 
+class DSRJurisdictionView(DPOAPIView):
+    def patch(self, request: Request, pk: int) -> Response:
+        actor_id = self.principal_id(request)
+        serializer = DSRJurisdictionUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        with transaction.atomic():
+            dsr = get_object_or_404(DSRRequest.objects.select_for_update(), pk=pk)
+            if (
+                dsr.state != DSRRequest.State.SUBMITTED
+                or dsr.source_searches.exists()
+                or dsr.review_tasks.exists()
+                or dsr.decisions.exists()
+                or dsr.response_versions.exists()
+                or dsr.exceptions.exists()
+            ):
+                return Response(
+                    {"detail": "Jurisdiction can be classified only during intake, before processing starts."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            policy = DSRDeadlinePolicy.objects.filter(
+                request_type=dsr.request_type,
+                jurisdiction_code=serializer.validated_data["jurisdiction_code"],
+                effective_at__lte=timezone.now(),
+            ).order_by("-version").first()
+            if policy is None:
+                return Response(
+                    {"detail": "No effective policy is configured for this jurisdiction and request type."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            dsr.jurisdiction_code = policy.jurisdiction_code
+            dsr.deadline_policy = policy
+            dsr.response_due_at = dsr.submitted_at + timedelta(
+                days=policy.internal_target_days
+            )
+            dsr.legal_deadline_at = (
+                dsr.submitted_at + timedelta(days=policy.legal_deadline_days)
+                if policy.legal_deadline_days is not None
+                else None
+            )
+            dsr.save(
+                update_fields=(
+                    "jurisdiction_code",
+                    "deadline_policy",
+                    "response_due_at",
+                    "legal_deadline_at",
+                    "updated_at",
+                )
+            )
+            _record_case_event(
+                dsr,
+                actor_id,
+                DSRCaseEvent.EventType.JURISDICTION_POLICY_ASSIGNED,
+                f"Intake jurisdiction set to {policy.jurisdiction_code}, policy version {policy.version}: "
+                f"{serializer.validated_data['reason']}",
+            )
+        return Response(DSRDPOStatusSerializer(dsr).data)
+
+
 class DSRReviewTaskListView(DPOAPIView):
+    allowed_roles = {
+        "GET": frozenset({"dpo", "department_contributor"}),
+        "POST": frozenset({"dpo"}),
+    }
+
     def get(self, request: Request, pk: int) -> Response:
-        self.principal_id(request)
+        actor_id = self.principal_id(request)
         dsr = get_object_or_404(DSRRequest, pk=pk)
-        return Response(DSRReviewTaskReadSerializer(dsr.review_tasks.all(), many=True).data)
+        tasks = dsr.review_tasks.all()
+        if request.user.role == "department_contributor":
+            tasks = tasks.filter(assigned_to=actor_id)
+            # Contributors only learn that a case exists if they work on it.
+            if not tasks.exists():
+                raise Http404
+        return Response(DSRReviewTaskReadSerializer(tasks, many=True).data)
 
     def post(self, request: Request, pk: int) -> Response:
         actor_id = self.principal_id(request)
@@ -1273,20 +1455,87 @@ class DSRReviewTaskListView(DPOAPIView):
         return Response(DSRReviewTaskReadSerializer(task).data, status=status.HTTP_201_CREATED)
 
 
+class DSRAssignedWorkView(RoleAPIView):
+    allowed_roles = frozenset({"department_contributor"})
+
+    def get(self, request: Request) -> Response:
+        tasks = DSRReviewTask.objects.filter(
+            assigned_to=self.principal_id(request)
+        ).select_related("dsr")
+        return Response(
+            [
+                {
+                    **DSRReviewTaskReadSerializer(task).data,
+                    "request_id": task.dsr_id,
+                    "request_type": task.dsr.get_request_type_display(),
+                    "case_stage": task.dsr.case_stage,
+                }
+                for task in tasks
+            ]
+        )
+
+
+class DSRAssignedReviewsView(RoleAPIView):
+    allowed_roles = frozenset({"independent_reviewer"})
+
+    def get(self, request: Request) -> Response:
+        reviews = DSRLegalReviewRequest.objects.filter(
+            assigned_reviewer=self.principal_id(request),
+            decision__isnull=True,
+        ).select_related("dsr", "response_version")
+        return Response(
+            [
+                {
+                    "request_id": review.dsr_id,
+                    "request_type": review.dsr.get_request_type_display(),
+                    "case_stage": review.dsr.case_stage,
+                    "requested_by": review.requested_by,
+                    "request_reason": review.request_reason,
+                    "proposed_outcome": review.get_proposed_outcome_display(),
+                    "response_version": review.response_version.version,
+                    "requested_at": review.requested_at,
+                }
+                for review in reviews
+            ]
+        )
+
+
 class DSRReviewTaskDetailView(DPOAPIView):
+    allowed_roles = frozenset({"dpo", "department_contributor"})
+
     def patch(self, request: Request, pk: int, task_pk: int) -> Response:
         actor_id = self.principal_id(request)
-        serializer = DSRReviewTaskUpdateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
         with transaction.atomic():
             dsr = get_object_or_404(DSRRequest.objects.select_for_update(), pk=pk)
             task = get_object_or_404(DSRReviewTask.objects.select_for_update(), dsr=dsr, pk=task_pk)
-            task.status = serializer.validated_data["status"]
+            if (
+                request.user.role == "department_contributor"
+                and task.assigned_to != actor_id
+            ):
+                raise PermissionDenied("Department contributors can update only their assigned work.")
+            serializer = DSRReviewTaskUpdateSerializer(
+                data=request.data,
+                instance=task,
+                partial=True,
+            )
+            serializer.is_valid(raise_exception=True)
+            task.status = serializer.validated_data.get("status", task.status)
+            task.completion_summary = serializer.validated_data.get(
+                "completion_summary", task.completion_summary
+            )
             task.updated_by = actor_id
             task.completed_at = (
                 timezone.now() if task.status == DSRReviewTask.Status.COMPLETED else None
             )
-            task.save(update_fields=("status", "updated_by", "completed_at", "updated_at"))
+            task.save(
+                update_fields=(
+                    "status",
+                    "completion_summary",
+                    "updated_by",
+                    "completed_at",
+                    "updated_at",
+                )
+            )
             _record_case_event(
                 dsr,
                 actor_id,
@@ -1562,7 +1811,7 @@ class PatientCommunicationView(PatientEndpoint):
                 actor_id=principal.patient_id,
                 reason="The subject provided requested information",
             )
-            dsr.save(update_fields=("state", "updated_at"))
+            dsr.save(update_fields=("state", "waiting_from_state", "updated_at"))
         return Response(
             DSRCommunicationReadSerializer(communication).data,
             status=status.HTTP_201_CREATED,
@@ -1603,11 +1852,8 @@ class DSRWithdrawalView(PatientEndpoint):
         return Response(DSRStatusSerializer(dsr).data)
 
 
-class DSRConsoleView(APIView):
-    authentication_classes = (PatientPortalJWTAuthentication,)
-
+class DSRConsoleView(DPOAPIView):
     def get(self, request: Request) -> Response:
-        DPOPermission.check(request)
         requests, filters = _filtered_dpo_requests(request.query_params)
         data = DSRDPOStatusSerializer(requests, many=True).data
         heatmap: dict[str, int] = {}
@@ -1621,7 +1867,15 @@ class DSRConsoleView(APIView):
 class DSRDeadlinePolicyView(DPOAPIView):
     def get(self, request: Request) -> Response:
         self.principal_id(request)
-        policies = DSRDeadlinePolicy.objects.all()
+        candidates = DSRDeadlinePolicy.objects.filter(
+            effective_at__lte=timezone.now()
+        ).order_by(
+            "jurisdiction_code", "request_type", "-version"
+        )
+        latest: dict[tuple[str, str], DSRDeadlinePolicy] = {}
+        for policy in candidates:
+            latest.setdefault((policy.jurisdiction_code, policy.request_type), policy)
+        policies = list(latest.values())
         return Response(DSRDeadlinePolicySerializer(policies, many=True).data)
 
     def patch(self, request: Request) -> Response:
@@ -1636,38 +1890,174 @@ class DSRDeadlinePolicyView(DPOAPIView):
         serializer = DSRDeadlinePolicyUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
-            policy = get_object_or_404(
-                DSRDeadlinePolicy.objects.select_for_update(),
-                request_type=request_type,
-            )
             updated = serializer.validated_data
-            changes = {
-                "internal_target_days": {
-                    "from": policy.internal_target_days,
-                    "to": updated["internal_target_days"],
-                },
-                "legal_deadline_days": {
-                    "from": policy.legal_deadline_days,
-                    "to": updated.get("legal_deadline_days"),
-                },
+            jurisdiction_code = updated["jurisdiction_code"]
+            previous = DSRDeadlinePolicy.objects.filter(
+                request_type=request_type,
+                jurisdiction_code=jurisdiction_code,
+                effective_at__lte=timezone.now(),
+            ).order_by("-version").first()
+            policy_values = {
+                "internal_target_days": updated["internal_target_days"],
+                "legal_deadline_days": updated["legal_deadline_days"],
+                "policy_source": updated.get("policy_source", ""),
+                "clock_start_event": updated["clock_start_event"],
+                "calendar_days": updated["calendar_days"],
+                "extension_allowed": updated["extension_allowed"],
+                "maximum_extension_days": updated["maximum_extension_days"],
+                "pause_allowed": updated["pause_allowed"],
+                "pause_reasons": updated["pause_reasons"],
+                "notification_required": updated["notification_required"],
             }
-            changes = {
-                name: values
-                for name, values in changes.items()
-                if values["from"] != values["to"]
+            changed_values = {
+                name: {
+                    "from": getattr(previous, name) if previous is not None else None,
+                    "to": value,
+                }
+                for name, value in policy_values.items()
+                if previous is None or getattr(previous, name) != value
             }
-            policy.internal_target_days = updated["internal_target_days"]
-            policy.legal_deadline_days = updated.get("legal_deadline_days")
-            policy.updated_by = actor_id
-            policy.save()
-            if changes:
-                DSRDeadlinePolicyAudit.objects.create(
-                    policy=policy,
-                    actor_id=actor_id,
-                    changed_values=changes,
-                    reason=updated["reason"],
-                )
+            if previous is not None and not changed_values:
+                return Response(DSRDeadlinePolicySerializer(previous).data)
+            policy = DSRDeadlinePolicy.objects.create(
+                request_type=request_type,
+                jurisdiction_code=jurisdiction_code,
+                version=(
+                    DSRDeadlinePolicy.objects.filter(
+                        request_type=request_type,
+                        jurisdiction_code=jurisdiction_code,
+                    ).order_by("-version").values_list("version", flat=True).first()
+                    or 0
+                ) + 1,
+                effective_at=timezone.now(),
+                updated_by=actor_id,
+                **policy_values,
+            )
+            DSRDeadlinePolicyAudit.objects.create(
+                policy=policy,
+                actor_id=actor_id,
+                changed_values=changed_values,
+                reason=updated["reason"],
+            )
         return Response(DSRDeadlinePolicySerializer(policy).data)
+
+
+class DSRCaseExceptionView(DPOAPIView):
+    def get(self, request: Request, pk: int) -> Response:
+        self.principal_id(request)
+        dsr = get_object_or_404(DSRRequest, pk=pk)
+        return Response(
+            DSRCaseExceptionReadSerializer(dsr.exceptions.all(), many=True).data
+        )
+
+    def post(self, request: Request, pk: int) -> Response:
+        actor_id = self.principal_id(request)
+        serializer = DSRCaseExceptionCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        with transaction.atomic():
+            dsr = get_object_or_404(DSRRequest.objects.select_for_update(), pk=pk)
+            if dsr.major_status == "Completed":
+                return Response(
+                    {"detail": "Exceptions cannot be added to a completed case."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            values = serializer.validated_data
+            exception_type = values["exception_type"]
+            policy = dsr.deadline_policy
+            effect_seconds = 0
+            effect_days = values.get("deadline_effect_days")
+            if exception_type == DSRCaseException.ExceptionType.CLARIFICATION and dsr.state not in {
+                DSRRequest.State.SUBMITTED,
+                DSRRequest.State.ACCEPTED,
+                DSRRequest.State.DEPT_SEARCH,
+                DSRRequest.State.PRIVACY_REVIEW,
+                DSRRequest.State.LEGAL_REVIEW,
+                DSRRequest.State.RESPONSE_PREP,
+            }:
+                return Response(
+                    {"detail": "This case is not in a stage where clarification can be requested."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            if exception_type == DSRCaseException.ExceptionType.EXTENSION:
+                if (
+                    policy is None
+                    or not policy.extension_allowed
+                    or effect_days is None
+                    or effect_days > policy.maximum_extension_days
+                ):
+                    return Response(
+                        {"detail": "This policy does not authorize the requested extension."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                if dsr.legal_deadline_at is None:
+                    return Response(
+                        {"detail": "A legal deadline must be configured before extending it."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+            elif exception_type == DSRCaseException.ExceptionType.DEADLINE_PAUSE:
+                if (
+                    policy is None
+                    or not policy.pause_allowed
+                    or str(values.get("policy_reason", "")).strip()
+                    not in policy.pause_reasons
+                    or effect_days is None
+                ):
+                    return Response(
+                        {"detail": "This policy does not authorize the requested pause."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                if dsr.legal_deadline_at is None:
+                    return Response(
+                        {"detail": "A legal deadline must be configured before pausing it."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+            if exception_type in {
+                DSRCaseException.ExceptionType.EXTENSION,
+                DSRCaseException.ExceptionType.DEADLINE_PAUSE,
+            }:
+                if policy is not None and policy.notification_required and not str(
+                    values.get("patient_notification", "")
+                ).strip():
+                    return Response(
+                        {"patient_notification": "This policy requires patient notification."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                effect_seconds = int(effect_days) * 24 * 60 * 60
+                dsr.legal_deadline_at += timedelta(seconds=effect_seconds)
+                dsr.save(update_fields=("legal_deadline_at", "updated_at"))
+
+            notification = str(values.get("patient_notification", "")).strip()
+            exception = DSRCaseException.objects.create(
+                dsr=dsr,
+                exception_type=exception_type,
+                reason=values["reason"],
+                policy_reason=str(values.get("policy_reason", "")).strip(),
+                actor_id=actor_id,
+                patient_notified_at=timezone.now() if notification else None,
+                deadline_effect_seconds=effect_seconds,
+            )
+            if notification:
+                DSRCommunication.objects.create(
+                    dsr=dsr,
+                    direction=DSRCommunication.Direction.DPO_TO_PATIENT,
+                    message=notification,
+                    created_by=actor_id,
+                )
+            if exception_type == DSRCaseException.ExceptionType.CLARIFICATION:
+                dsr.request_information(actor_id=actor_id, reason=values["reason"])
+                dsr.save(
+                    update_fields=("state", "waiting_from_state", "updated_at")
+                )
+            _record_case_event(
+                dsr,
+                actor_id,
+                DSRCaseEvent.EventType.EXCEPTION_RECORDED,
+                f"{exception.get_exception_type_display()} recorded: {exception.reason}",
+            )
+        return Response(
+            DSRCaseExceptionReadSerializer(exception).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class DSRCSVExportView(DPOAPIView):
@@ -1676,20 +2066,35 @@ class DSRCSVExportView(DPOAPIView):
         return _dpo_csv_response(request.query_params, actor_id)
 
 
-class DSRTransitionView(APIView):
-    authentication_classes = (PatientPortalJWTAuthentication,)
+class DSRTransitionView(RoleAPIView):
+    allowed_roles = frozenset({"dpo", "independent_reviewer"})
+    REVIEW_DECISION_ACTIONS = frozenset({"approve_legal_review", "return_from_legal_review"})
 
     def post(self, request: Request, pk: int) -> Response:
-        DPOPermission.check(request)
+        actor_id = self.principal_id(request)
+        action_name = request.data.get("action")
+        if request.user.role == "independent_reviewer":
+            if action_name not in self.REVIEW_DECISION_ACTIONS:
+                raise PermissionDenied(
+                    "Independent reviewers may only approve or return their assigned review."
+                )
+        elif action_name in self.REVIEW_DECISION_ACTIONS:
+            raise PermissionDenied(
+                "Use an Independent Reviewer identity to decide this review."
+            )
         serializer = DSRTransitionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
             dsr = get_object_or_404(DSRRequest.objects.select_for_update(), pk=pk)
+            if request.user.role == "independent_reviewer":
+                review_request = dsr.legal_review_requests.order_by("-pk").first()
+                if review_request is None or review_request.assigned_reviewer != actor_id:
+                    raise PermissionDenied("This review is assigned to another reviewer.")
             try:
                 _apply_transition(
                     dsr,
                     action_name=serializer.validated_data["action"],
-                    actor_id=request.user.patient_id,
+                    actor_id=actor_id,
                     reason=serializer.validated_data["reason"],
                     resolution_status=serializer.validated_data.get(
                         "resolution_status"
@@ -1698,6 +2103,9 @@ class DSRTransitionView(APIView):
                         "proposed_outcome"
                     ),
                     duplicate_of_id=serializer.validated_data.get("duplicate_of"),
+                    assigned_reviewer=serializer.validated_data.get(
+                        "assigned_reviewer", ""
+                    ),
                 )
             except TransitionNotAllowed as error:
                 return Response(

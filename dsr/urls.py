@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     DSRAssignmentView,
+    DSRJurisdictionView,
     DSRCaseDetailView,
     DSRCommunicationView,
     DSRConsoleView,
@@ -22,6 +23,9 @@ from .views import (
     PatientPublishedResponsesView,
     SubmitDSRView,
     DSRDeadlinePolicyView,
+    DSRCaseExceptionView,
+    DSRAssignedWorkView,
+    DSRAssignedReviewsView,
     admin_home,
     demo_login,
     demo_logout,
@@ -57,14 +61,34 @@ urlpatterns = [
         name="dpo-dsr-assignment",
     ),
     path(
+        "api/v1/dpo/dsrs/<int:pk>/jurisdiction/",
+        DSRJurisdictionView.as_view(),
+        name="dpo-dsr-jurisdiction",
+    ),
+    path(
         "api/v1/dpo/dsrs/<int:pk>/tasks/",
         DSRReviewTaskListView.as_view(),
         name="dpo-dsr-tasks",
     ),
     path(
+        "api/v1/dpo/tasks/assigned/",
+        DSRAssignedWorkView.as_view(),
+        name="dpo-assigned-work",
+    ),
+    path(
+        "api/v1/dpo/reviews/assigned/",
+        DSRAssignedReviewsView.as_view(),
+        name="dpo-assigned-reviews",
+    ),
+    path(
         "api/v1/dpo/dsrs/<int:pk>/tasks/<int:task_pk>/",
         DSRReviewTaskDetailView.as_view(),
         name="dpo-dsr-task",
+    ),
+    path(
+        "api/v1/dpo/dsrs/<int:pk>/exceptions/",
+        DSRCaseExceptionView.as_view(),
+        name="dpo-dsr-exceptions",
     ),
     path(
         "api/v1/dpo/dsrs/<int:pk>/decisions/",

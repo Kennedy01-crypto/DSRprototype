@@ -7,6 +7,8 @@ from rest_framework import serializers
 
 from .models import (
     DSRCommunication,
+    DSRCaseException,
+    DSRCaseEscalation,
     DSRDecision,
     DSRDeadlinePolicy,
     DSRLegalReviewDecision,
@@ -77,6 +79,7 @@ class DSRStatusSerializer(serializers.ModelSerializer):
     resolution_status = serializers.SerializerMethodField()
     legal_deadline_at = serializers.DateTimeField(read_only=True)
     requires_patient_response = serializers.BooleanField(read_only=True)
+    disposition_initiator = serializers.SerializerMethodField()
 
     class Meta:
         model = DSRRequest
@@ -87,7 +90,7 @@ class DSRStatusSerializer(serializers.ModelSerializer):
             "requires_patient_response", "legal_time_remaining_seconds",
             "duplicate_of", "reconsideration_of", "submitted_at",
             "response_due_at", "time_remaining_seconds",
-            "closed_at",
+            "closed_at", "disposition_initiator", "jurisdiction_code",
         )
 
     def get_state(self, obj: DSRRequest) -> str:
@@ -105,9 +108,16 @@ class DSRStatusSerializer(serializers.ModelSerializer):
         )
 
     def get_resolution_status(self, obj: DSRRequest) -> str:
+        if obj.resolution_status == DSRRequest.ResolutionStatus.WITHDRAWN:
+            return "Withdrawn by the patient"
         if obj.resolution_status == DSRRequest.ResolutionStatus.RETAINED:
             return "Rejected (Refused)"
         return obj.get_resolution_status_display()
+
+    def get_disposition_initiator(self, obj: DSRRequest) -> str | None:
+        if not hasattr(obj, "disposition"):
+            return None
+        return obj.disposition.get_initiated_by_display()
 
 
 class DSRDPOStatusSerializer(DSRStatusSerializer):
@@ -116,6 +126,9 @@ class DSRDPOStatusSerializer(DSRStatusSerializer):
     proposed_outcome = serializers.SerializerMethodField()
     independent_review_required = serializers.BooleanField(read_only=True)
     independent_review_reason = serializers.CharField(read_only=True)
+    case_stage = serializers.CharField(read_only=True)
+    escalation_active = serializers.BooleanField(read_only=True)
+    waiting_for_subject_information = serializers.BooleanField(read_only=True)
 
     class Meta(DSRStatusSerializer.Meta):
         fields = (
@@ -125,6 +138,9 @@ class DSRDPOStatusSerializer(DSRStatusSerializer):
             "proposed_outcome",
             "independent_review_required",
             "independent_review_reason",
+            "case_stage",
+            "escalation_active",
+            "waiting_for_subject_information",
         )
 
     def get_legal_review_completed(self, obj: DSRRequest) -> bool:
@@ -155,6 +171,7 @@ class DSRLegalReviewRequestReadSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "requested_by",
+            "assigned_reviewer",
             "request_reason",
             "proposed_outcome",
             "response_version",
@@ -177,27 +194,163 @@ class DSRDeadlinePolicySerializer(serializers.ModelSerializer):
     class Meta:
         model = DSRDeadlinePolicy
         fields = (
+            "id",
             "request_type",
             "request_type_label",
+            "jurisdiction_code",
+            "version",
+            "effective_at",
             "internal_target_days",
             "legal_deadline_days",
+            "policy_source",
+            "clock_start_event",
+            "calendar_days",
+            "extension_allowed",
+            "maximum_extension_days",
+            "pause_allowed",
+            "pause_reasons",
+            "notification_required",
             "updated_by",
             "updated_at",
         )
-        read_only_fields = ("request_type", "updated_by", "updated_at")
+        read_only_fields = (
+            "id",
+            "request_type",
+            "version",
+            "updated_by",
+            "updated_at",
+        )
 
 
 class DSRDeadlinePolicyUpdateSerializer(serializers.Serializer):
+    jurisdiction_code = serializers.RegexField(r"^[A-Z]{2,8}$", default="KE")
     internal_target_days = serializers.IntegerField(min_value=1, max_value=3650)
     legal_deadline_days = serializers.IntegerField(
         allow_null=True, min_value=1, max_value=3650
     )
+    policy_source = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    clock_start_event = serializers.ChoiceField(
+        choices=(("SUBMITTED", "Submitted"),), default="SUBMITTED"
+    )
+    calendar_days = serializers.BooleanField(default=True)
+    extension_allowed = serializers.BooleanField(default=False)
+    maximum_extension_days = serializers.IntegerField(
+        min_value=0, max_value=3650, default=0
+    )
+    pause_allowed = serializers.BooleanField(default=False)
+    pause_reasons = serializers.ListField(
+        child=serializers.CharField(max_length=120),
+        required=False,
+        default=list,
+    )
+    notification_required = serializers.BooleanField(default=True)
     reason = serializers.CharField(min_length=1, max_length=2000)
 
     def validate_reason(self, value: str) -> str:
         if not value.strip():
             raise serializers.ValidationError("A reason is required.")
         return value.strip()
+
+    def validate(self, attrs: dict[str, object]) -> dict[str, object]:
+        if attrs["extension_allowed"] and attrs["maximum_extension_days"] < 1:
+            raise serializers.ValidationError(
+                {"maximum_extension_days": "Set a positive maximum when extensions are allowed."}
+            )
+        if attrs["pause_allowed"] and not attrs["pause_reasons"]:
+            raise serializers.ValidationError(
+                {"pause_reasons": "List the policy-approved reasons for pausing a deadline."}
+            )
+        return attrs
+
+
+class DSRCaseExceptionCreateSerializer(serializers.Serializer):
+    exception_type = serializers.ChoiceField(
+        choices=DSRCaseException.ExceptionType.choices
+    )
+    reason = serializers.CharField(min_length=1, max_length=4000)
+    patient_notification = serializers.CharField(
+        required=False, allow_blank=True, max_length=4000
+    )
+    deadline_effect_days = serializers.IntegerField(
+        required=False, min_value=1, max_value=3650
+    )
+    policy_reason = serializers.CharField(
+        required=False, allow_blank=True, max_length=120
+    )
+
+    def validate_reason(self, value: str) -> str:
+        if not value.strip():
+            raise serializers.ValidationError("A reason is required.")
+        return value.strip()
+
+    def validate(self, attrs: dict[str, object]) -> dict[str, object]:
+        exception_type = attrs["exception_type"]
+        message = str(attrs.get("patient_notification", "")).strip()
+        effect_days = attrs.get("deadline_effect_days")
+        if exception_type in {
+            DSRCaseException.ExceptionType.CLARIFICATION,
+            DSRCaseException.ExceptionType.OUT_OF_SCOPE,
+            DSRCaseException.ExceptionType.UNABLE_TO_PROCESS,
+        } and not message:
+            raise serializers.ValidationError(
+                {"patient_notification": "Record the patient-facing notification."}
+            )
+        if exception_type in {
+            DSRCaseException.ExceptionType.EXTENSION,
+            DSRCaseException.ExceptionType.DEADLINE_PAUSE,
+        } and effect_days is None:
+            raise serializers.ValidationError(
+                {"deadline_effect_days": "Record the authorized number of deadline days."}
+            )
+        if (
+            exception_type == DSRCaseException.ExceptionType.DEADLINE_PAUSE
+            and not str(attrs.get("policy_reason", "")).strip()
+        ):
+            raise serializers.ValidationError(
+                {"policy_reason": "Select the policy-approved pause reason."}
+            )
+        return attrs
+
+
+class DSRCaseExceptionReadSerializer(serializers.ModelSerializer):
+    exception_type = serializers.CharField(
+        source="get_exception_type_display", read_only=True
+    )
+
+    class Meta:
+        model = DSRCaseException
+        fields = (
+            "id",
+            "exception_type",
+            "reason",
+            "policy_reason",
+            "actor_id",
+            "patient_notified_at",
+            "deadline_effect_seconds",
+            "created_at",
+        )
+
+
+class DSRCaseEscalationReadSerializer(serializers.ModelSerializer):
+    active = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DSRCaseEscalation
+        fields = (
+            "id",
+            "reason",
+            "opened_by",
+            "assigned_to",
+            "due_at",
+            "created_at",
+            "resolved_by",
+            "resolution",
+            "resolved_at",
+            "active",
+        )
+
+    def get_active(self, obj: DSRCaseEscalation) -> bool:
+        return obj.resolved_at is None
 
 
 class DSRTransitionSerializer(serializers.Serializer):
@@ -216,6 +369,8 @@ class DSRTransitionSerializer(serializers.Serializer):
             DSRRequest.ResolutionStatus.PARTIALLY_FULFILLED,
             DSRRequest.ResolutionStatus.REJECTED,
             DSRRequest.ResolutionStatus.RETAINED,
+            DSRRequest.ResolutionStatus.OUT_OF_SCOPE,
+            DSRRequest.ResolutionStatus.UNABLE_TO_PROCESS,
         ),
         required=False,
         allow_blank=True,
@@ -229,6 +384,11 @@ class DSRTransitionSerializer(serializers.Serializer):
             DSRRequest.ResolutionStatus.DUPLICATE,
         ),
         required=False,
+    )
+    assigned_reviewer = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=128,
     )
 
     def validate(self, attrs: dict[str, object]) -> dict[str, object]:
@@ -273,6 +433,12 @@ class DSRTransitionSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {"proposed_outcome": "Select the outcome being sent for review."}
             )
+        if attrs["action"] == "request_legal_review" and not str(
+            attrs.get("assigned_reviewer", "")
+        ).strip():
+            raise serializers.ValidationError(
+                {"assigned_reviewer": "Assign an independent reviewer for this review."}
+            )
         return attrs
 
 
@@ -285,19 +451,49 @@ class DSRAssignmentSerializer(serializers.Serializer):
         return value
 
 
+class DSRJurisdictionUpdateSerializer(serializers.Serializer):
+    jurisdiction_code = serializers.RegexField(r"^[A-Z]{2,8}$")
+    reason = serializers.CharField(min_length=1, max_length=2000)
+
+    def validate_reason(self, value: str) -> str:
+        if not value.strip():
+            raise serializers.ValidationError("A reason is required.")
+        return value.strip()
+
+
 class DSRReviewTaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = DSRReviewTask
-        fields = ("title", "details", "assigned_to")
+        fields = (
+            "title",
+            "task_type",
+            "details",
+            "assigned_to",
+            "due_at",
+            "required_for_completion",
+        )
         extra_kwargs = {
             "title": {"required": True},
             "details": {"required": False, "allow_blank": True},
             "assigned_to": {"required": False, "allow_blank": True},
+            "task_type": {"required": False},
+            "due_at": {"required": False, "allow_null": True},
+            "required_for_completion": {"required": False},
         }
 
 
 class DSRReviewTaskUpdateSerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=DSRReviewTask.Status.choices)
+    completion_summary = serializers.CharField(required=False, allow_blank=True, max_length=4000)
+
+    def validate(self, attrs: dict[str, object]) -> dict[str, object]:
+        if (
+            attrs["status"] == DSRReviewTask.Status.COMPLETED
+            and not str(attrs.get("completion_summary", "")).strip()
+            and not str(getattr(self.instance, "completion_summary", "")).strip()
+        ):
+            attrs["completion_summary"] = "Completed as scheduled."
+        return attrs
 
 
 class DSRDecisionSerializer(serializers.ModelSerializer):
@@ -374,8 +570,12 @@ class DSRReviewTaskReadSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "title",
+            "task_type",
             "details",
             "assigned_to",
+            "due_at",
+            "required_for_completion",
+            "completion_summary",
             "status",
             "created_by",
             "updated_by",

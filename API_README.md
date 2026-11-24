@@ -1,6 +1,6 @@
 # DSR API Reference
 
-This document describes the HTTP endpoints exposed by the Kenya DPA 2019 DSR prototype. The API is served at `http://localhost:8000` when the Docker Compose stack is running.
+This document describes the HTTP endpoints exposed by the Kenya DPA 2019 DSR prototype. The API is served at `http://localhost:8002` when the Docker Compose stack is running.
 
 ## Authentication
 
@@ -122,7 +122,7 @@ docker compose exec web python manage.py test dsr.tests.test_acceptance_pack dsr
 Example:
 
 ```sh
-curl -X POST http://localhost:8000/api/v1/dsrs/submit/ \
+curl -X POST http://localhost:8002/api/v1/dsrs/submit/ \
   -H "Authorization: Bearer patient:alice" \
   -H "Content-Type: application/json" \
   -d '{"request_type":"ACCESS","description":"Please provide a copy of my personal data.","department":"Medical Records"}'
@@ -135,7 +135,7 @@ Returns the requests belonging to the authenticated patient. Requires a patient 
 Example:
 
 ```sh
-curl http://localhost:8000/api/v1/dsrs/my-requests/ \
+curl http://localhost:8002/api/v1/dsrs/my-requests/ \
   -H "Authorization: Bearer patient:alice"
 ```
 
@@ -177,7 +177,7 @@ Departments without a value are grouped under `Unassigned`. The response is a si
 Example:
 
 ```sh
-curl http://localhost:8000/api/v1/dpo/dsrs/ \
+curl http://localhost:8002/api/v1/dpo/dsrs/ \
   -H "Authorization: Bearer dpo:caseworker1"
 ```
 
@@ -221,8 +221,8 @@ Request body:
 | `start_departmental_search` | Submitted or Accepted | Departmental Search |
 | `send_to_privacy_review` | Departmental Search | Privacy Review |
 | `request_information` | Accepted, Departmental Search, Privacy Review, Legal / Management Review, or Response Preparation | Waiting for Subject Information |
-| `resume_escalated` | Escalated | Accepted, or returns to Waiting for Subject Information if that was the source state |
-| `request_legal_review` | Response Preparation, with finalized response and proposed outcome | Legal / Management Review |
+| `resume_escalated` | Escalated | The stage the case was escalated from (Accepted for older records with no saved stage) |
+| `request_legal_review` | Response Preparation, with finalized response, proposed outcome, and `assigned_reviewer` (who must not be the requester, response author, or assigned case handler) | Legal / Management Review |
 | `approve_privacy_review` | Privacy Review | Response Preparation |
 | `approve_legal_review` | Legal / Management Review, by an eligible independent reviewer with an unchanged snapshot | Response Preparation |
 | `return_from_legal_review` | Legal / Management Review, by an eligible independent reviewer | Response Preparation |
@@ -233,6 +233,7 @@ Request body:
 | `escalate` | Accepted, Departmental Search, Privacy Review, Legal / Management Review, Response Preparation, or Waiting for Subject Information | Escalated |
 
 `approve_privacy_review` transitions from privacy review to response preparation. Deadline monitoring records one overdue event per deadline and does not automatically escalate a case or alter its status.
+Repeating `send_to_privacy_review` after the case has already entered Privacy Review is treated as a successful no-op, so a delayed client retry does not create a duplicate transition.
 
 Success returns the updated request-status object. An action that is not valid for the request's current state returns `409 Conflict`; for example, `approve_and_close` only applies to a request in Response Preparation.
 Approving privacy/legal review into Response Preparation also returns `409 Conflict`
@@ -243,7 +244,7 @@ applicable mock source/checklist entry explicitly before proceeding.
 Example:
 
 ```sh
-curl -X POST http://localhost:8000/api/v1/dpo/dsrs/1/transition/ \
+curl -X POST http://localhost:8002/api/v1/dpo/dsrs/1/transition/ \
   -H "Authorization: Bearer dpo:caseworker1" \
   -H "Content-Type: application/json" \
   -d '{"action":"start_departmental_search","reason":"Start the departmental search."}'
@@ -296,7 +297,7 @@ must be a different mock principal from the review requester, response author,
 and assigned handler. These mock-ID checks are workflow safeguards only, not
 production identity or role-separation controls.
 
-The browser patient portal also supports withdrawal and, when a case is waiting for subject information, sending a response. When requesting information, DPOs should record the actual question as a patient update; the transition reason is internal audit context. Escalated cases can be resumed by a DPO with a required reason. Resuming does not reset the response target. Requests waiting for information retain their original target date; no legal deadline pause is implemented.
+The browser patient portal also supports withdrawal and, when a case is waiting for subject information, sending a response. When requesting information, DPOs should record the actual question as a patient update; the transition reason is internal audit context. Escalated cases can be resumed by a DPO with a required reason; they return to the stage they were escalated from. When the patient responds to an information request, the case returns to the stage it was waiting from. Resuming does not reset the response target or re-run data collection. Requests waiting for information retain their original target date; no legal deadline pause is implemented.
 
 ## Response fields
 

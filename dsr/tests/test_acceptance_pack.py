@@ -123,6 +123,8 @@ class DSRAcceptancePackTests(TestCase):
         self.assertEqual(request.state, DSRRequest.State.ESCALATED)
         self.assertLess(request.response_due_at, timezone.now())
         original_target = request.response_due_at
+        stage_before_escalation = request.escalated_from
+        self.assertEqual(stage_before_escalation, DSRRequest.State.PRIVACY_REVIEW)
 
         client = APIClient()
         client.credentials(HTTP_AUTHORIZATION="Bearer dpo:acceptance-reviewer")
@@ -134,6 +136,8 @@ class DSRAcceptancePackTests(TestCase):
 
         self.assertEqual(resumed.status_code, 200)
         request = DSRRequest.objects.get(pk=request.pk)
-        self.assertEqual(request.state, DSRRequest.State.ACCEPTED)
+        # Resuming returns to the stage the case left, not back to intake.
+        self.assertEqual(request.state, stage_before_escalation)
+        self.assertEqual(request.escalated_from, "")
         self.assertEqual(request.response_due_at, original_target)
         self.assertLess(request.response_due_at, timezone.now() - timedelta(days=1))

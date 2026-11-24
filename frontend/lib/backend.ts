@@ -1,6 +1,6 @@
 import type { DemoSession } from "@/lib/types";
 
-const backendOrigin = process.env.DSR_API_URL ?? "http://localhost:8000";
+const backendOrigin = process.env.DSR_API_URL ?? "http://localhost:8002";
 
 export async function backendRequest(
   path: string,

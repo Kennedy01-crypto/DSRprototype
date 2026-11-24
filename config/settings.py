@@ -51,6 +51,8 @@ USE_TZ = True
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ("dsr.authentication.PatientPortalJWTAuthentication",),
+    # Fail closed: every API view must declare ``allowed_roles``.
+    "DEFAULT_PERMISSION_CLASSES": ("dsr.permissions.RolePermission",),
 }
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/0")
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)

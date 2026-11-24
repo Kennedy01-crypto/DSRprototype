@@ -23,6 +23,14 @@ async function getRequestSession(context: RouteContext) {
       ),
     };
   }
+  if (session.role !== "patient" && session.role !== "dpo") {
+    return {
+      response: NextResponse.json(
+        { detail: "This workspace cannot access patient communications." },
+        { status: 403 },
+      ),
+    };
+  }
   const { id } = await context.params;
   if (!/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id))) {
     return {

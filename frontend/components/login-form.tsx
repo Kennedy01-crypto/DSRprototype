@@ -33,7 +33,14 @@ export function LoginForm() {
         return;
       }
       toast.success(`Opened the mock ${role} workspace.`);
-      router.push(role === "dpo" ? "/dpo" : role === "admin" ? "/admin" : "/patient");
+      const destination = {
+        patient: "/patient",
+        dpo: "/dpo",
+        admin: "/admin",
+        department_contributor: "/department",
+        independent_reviewer: "/reviewer",
+      } satisfies Record<DemoRole, string>;
+      router.push(destination[role]);
       router.refresh();
     } catch {
       toast.error("The UI service could not complete sign-in.");
@@ -114,24 +121,32 @@ export function LoginForm() {
               <form onSubmit={handleSubmit} className="space-y-5">
                 <fieldset>
                   <legend className="mb-2 text-sm font-medium">Workspace</legend>
-                  <div className="grid grid-cols-3 gap-2 rounded-xl bg-muted p-1">
-                    {(["patient", "dpo", "admin"] as const).map((item) => (
+                  <div className="grid grid-cols-2 gap-2 rounded-xl bg-muted p-1">
+                    {([
+                      "patient",
+                      "dpo",
+                      "department_contributor",
+                      "independent_reviewer",
+                      "admin",
+                    ] as const).map((item) => (
                       <button
                         key={item}
                         type="button"
                         aria-pressed={role === item}
                         onClick={() => setRole(item)}
-                        className={`rounded-lg px-3 py-2.5 text-sm font-medium capitalize transition ${
+                        className={`rounded-lg px-2 py-2.5 text-xs font-medium transition ${
                           role === item
                             ? "bg-white text-foreground shadow-sm"
                             : "text-muted-foreground hover:text-foreground"
                         }`}
                       >
-                        {item === "dpo"
-                          ? "DPO workspace"
-                          : item === "admin"
-                            ? "Admin workspace"
-                            : "Patient portal"}
+                        {{
+                          patient: "Patient portal",
+                          dpo: "DPO workspace",
+                          admin: "Admin",
+                          department_contributor: "Department contributor",
+                          independent_reviewer: "Independent reviewer",
+                        }[item]}
                       </button>
                     ))}
                   </div>
@@ -148,7 +163,11 @@ export function LoginForm() {
                         ? "e.g. mock-patient-access"
                         : role === "admin"
                           ? "e.g. mock-admin"
-                          : "e.g. mock-reviewer"
+                          : role === "department_contributor"
+                            ? "e.g. mock-records-owner"
+                            : role === "independent_reviewer"
+                              ? "e.g. mock-privacy-reviewer"
+                              : "e.g. mock-dpo"
                     }
                     minLength={1}
                     maxLength={128}

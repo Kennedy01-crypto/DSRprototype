@@ -274,6 +274,8 @@
         <option value="REJECTED">Rejected (Refused)</option>
         <option value="RETAINED">Retained with rationale</option>
       </select>
+      <label for="assigned_reviewer">Independent reviewer ID (required when requesting review)</label>
+      <input id="assigned_reviewer" name="assigned_reviewer" maxlength="128">
       <label for="duplicate_of">Canonical original request ID (required when marking/closing as duplicate)</label>
       <input id="duplicate_of" name="duplicate_of" type="number" min="1">
       <p class="notice">Mark a case as duplicate before preparing its response. Publish the response version that records the duplicate outcome before completing the case.</p>

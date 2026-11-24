@@ -40,6 +40,12 @@ const navItems = {
   admin: [
     { label: "Admin overview", href: "/admin", icon: ShieldCheck },
   ],
+  department_contributor: [
+    { label: "Assigned work", href: "/department", icon: ClipboardList },
+  ],
+  independent_reviewer: [
+    { label: "Assigned reviews", href: "/reviewer", icon: ShieldCheck },
+  ],
 };
 
 const SIDEBAR_STORAGE_KEY = "dsr-sidebar-expanded";
@@ -71,6 +77,14 @@ export function AppShell({ role, principalId, children }: AppShellProps) {
   const pathname = usePathname();
   const router = useRouter();
   const dpo = role === "dpo";
+  const canSubmitRequest = role === "patient";
+  const roleTitle = {
+    patient: "Patient portal",
+    dpo: "DPO workspace",
+    admin: "Admin workspace",
+    department_contributor: "Department contributor",
+    independent_reviewer: "Independent reviewer",
+  } satisfies Record<DemoRole, string>;
   const sidebarExpanded = useSyncExternalStore(
     subscribeSidebar,
     getSidebarExpanded,
@@ -177,7 +191,7 @@ export function AppShell({ role, principalId, children }: AppShellProps) {
             />
             <div>
               <p className="text-sm font-semibold">
-                {dpo ? "DPO workspace" : role === "admin" ? "Admin workspace" : "Patient portal"}
+                {roleTitle[role]}
               </p>
               <p className="hidden text-xs text-muted-foreground sm:block">
                 Mock identity: {principalId}
@@ -219,7 +233,7 @@ export function AppShell({ role, principalId, children }: AppShellProps) {
                   {label}
                 </Link>
               ))}
-              {!dpo && (
+              {canSubmitRequest && (
                 <Link
                   href="/patient#new-request"
                   className="inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm"
