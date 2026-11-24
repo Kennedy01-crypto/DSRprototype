@@ -7,6 +7,7 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   Activity,
   Bell,
+  Cable,
   ClipboardList,
   ChevronLeft,
   ChevronRight,
@@ -33,6 +34,7 @@ const navItems = {
     { label: "Overview", href: "/dpo", icon: LayoutDashboard },
     { label: "Request queue", href: "/dpo/requests", icon: ClipboardList },
     { label: "Deadline policy", href: "/dpo/policy", icon: FileText },
+    { label: "Integrations", href: "/dpo/integrations", icon: Cable },
   ],
   patient: [
     { label: "My requests", href: "/patient", icon: FileText },

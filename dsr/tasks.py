@@ -85,3 +85,22 @@ def monitor_sla_deadlines() -> int:
             )
             recorded += 1
     return recorded
+
+@shared_task(soft_time_limit=60, time_limit=90)
+def run_integration_job(job_id: int) -> str | None:
+    """Run one integration job. The rules live in dsr.services."""
+    from . import services
+
+    return services.run_integration_job(job_id)
+
+
+@shared_task
+def dispatch_integration_jobs() -> int:
+    """Every minute: queue jobs that are due, including retries and any job
+    whose first hand-off to the queue was lost."""
+    from . import services
+
+    job_ids = services.due_integration_job_ids()
+    for job_id in job_ids:
+        run_integration_job.delay(job_id)
+    return len(job_ids)

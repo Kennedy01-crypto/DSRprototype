@@ -9,6 +9,7 @@ helpers in ``dsr.selectors``; errors map to HTTP in ``dsr.exceptions``.
 from __future__ import annotations
 
 import csv
+import re
 from collections.abc import Mapping
 
 from django.http import HttpRequest, HttpResponse, JsonResponse
@@ -23,15 +24,18 @@ from rest_framework.views import APIView
 from . import selectors, services
 from .authentication import PatientPortalJWTAuthentication, SimulatedPrincipal
 from .exceptions import CaseNotFound
+from .integrations.registry import automated_source_systems
 from .models import (
     DSRDeadlinePolicy,
     DSRLegalReviewRequest,
     DSRRequest,
     DSRReviewTask,
     DSRSourceSearch,
+    IntegrationJob,
 )
 from .permissions import RolePermission
 from .serializers import (
+    AutomatedSearchSerializer,
     DSRAssignmentSerializer,
     DSRCaseEscalationReadSerializer,
     DSRCaseExceptionCreateSerializer,
@@ -58,6 +62,7 @@ from .serializers import (
     DSRSubmitSerializer,
     DSRTransitionSerializer,
     DSRWithdrawSerializer,
+    IntegrationJobReadSerializer,
 )
 
 
@@ -107,13 +112,27 @@ class DPOAPIView(RoleAPIView):
 # --------------------------------------------------------------------------
 
 
+IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+
+
 class SubmitDSRView(PatientEndpoint):
     def post(self, request: Request) -> Response:
         patient_id = self.principal_id(request)
+        key = request.headers.get("Idempotency-Key", "").strip()
+        if key and not IDEMPOTENCY_KEY.fullmatch(key):
+            return Response(
+                {"detail": "Idempotency-Key must be 1-128 letters, digits, '_', '.', ':' or '-'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         serializer = DSRSubmitSerializer(data=request.data, context={"patient_id": patient_id})
         serializer.is_valid(raise_exception=True)
-        dsr = services.submit_request(patient_id, serializer.validated_data)
-        return Response(DSRStatusSerializer(dsr).data, status=status.HTTP_201_CREATED)
+        dsr, created = services.submit_request(
+            patient_id, serializer.validated_data, idempotency_key=key
+        )
+        return Response(
+            DSRStatusSerializer(dsr).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
 
 class MyRequestsView(PatientEndpoint):
@@ -313,6 +332,10 @@ class DSRCaseDetailView(DPOAPIView):
                     dsr.response_versions.select_related("publication"), many=True
                 ).data,
                 "response_readiness": services.response_signoff_error(dsr),
+                "automated_source_systems": automated_source_systems(),
+                "integration_jobs": IntegrationJobReadSerializer(
+                    dsr.integration_jobs.all()[:50], many=True
+                ).data,
                 "available_actions": [
                     {"label": label, "action": action} for label, action in actions
                 ],
@@ -565,6 +588,55 @@ class DSRSourceSearchDetailView(DPOAPIView):
             pk, search_pk, actor_id=self.principal_id(request), data=serializer.validated_data
         )
         return Response(DSRSourceSearchReadSerializer(search).data)
+
+
+class DSRAutomatedSearchView(DPOAPIView):
+    """Queue a connector search of one system. Returns 202: the result
+    arrives later on the source search."""
+
+    def post(self, request: Request, pk: int) -> Response:
+        serializer = AutomatedSearchSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        job = services.request_automated_search(
+            pk,
+            actor_id=self.principal_id(request),
+            source_system=serializer.validated_data["source_system"],
+        )
+        return Response(IntegrationJobReadSerializer(job).data, status=status.HTTP_202_ACCEPTED)
+
+
+# --------------------------------------------------------------------------
+# Integration jobs
+# --------------------------------------------------------------------------
+
+
+class IntegrationJobListView(DPOAPIView):
+    """Integration work across all cases. ``?status=FAILED`` is the
+    "needs attention" queue; ``?request=<id>`` narrows to one case."""
+
+    def get(self, request: Request) -> Response:
+        jobs = IntegrationJob.objects.all()
+        job_status = request.query_params.get("status", "")
+        if job_status in IntegrationJob.Status.values:
+            jobs = jobs.filter(status=job_status)
+        request_id = request.query_params.get("request", "")
+        if request_id.isdigit():
+            jobs = jobs.filter(dsr_id=int(request_id))
+        return Response(
+            {
+                "counts": {
+                    value: IntegrationJob.objects.filter(status=value).count()
+                    for value in IntegrationJob.Status.values
+                },
+                "jobs": IntegrationJobReadSerializer(jobs[:200], many=True).data,
+            }
+        )
+
+
+class IntegrationJobRetryView(DPOAPIView):
+    def post(self, request: Request, job_pk: int) -> Response:
+        job = services.retry_integration_job(job_pk, actor_id=self.principal_id(request))
+        return Response(IntegrationJobReadSerializer(job).data, status=status.HTTP_202_ACCEPTED)
 
 
 class DSRDecisionListView(DPOAPIView):

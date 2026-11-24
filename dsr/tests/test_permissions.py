@@ -55,6 +55,9 @@ EXPECTED_ROLES: dict[str, frozenset[str] | dict[str, frozenset[str]]] = {
     "dpo-dsr-response-versions": DPO,
     "dpo-dsr-response-publish": DPO,
     "dpo-dsr-communications": DPO,
+    "dpo-dsr-automated-search": DPO,
+    "dpo-integration-jobs": DPO,
+    "dpo-integration-job-retry": DPO,
 }
 HANDLER_METHODS = ("get", "post", "put", "patch", "delete")
 # Route arguments only need to be well-formed: the role gate runs before

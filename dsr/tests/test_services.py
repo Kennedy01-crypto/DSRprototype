@@ -10,7 +10,7 @@ from dsr.models import DSRCaseEvent, DSRDecision, DSRRequest, DSRSourceSearch
 
 
 def new_case(patient_id: str = "alice") -> DSRRequest:
-    return services.submit_request(
+    dsr, _created = services.submit_request(
         patient_id,
         {
             "request_type": DSRRequest.RequestType.ACCESS,
@@ -18,6 +18,7 @@ def new_case(patient_id: str = "alice") -> DSRRequest:
             "department": "Records",
         },
     )
+    return dsr
 
 
 class ServiceLayerTests(TestCase):

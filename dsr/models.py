@@ -91,11 +91,21 @@ class DSRRequest(models.Model):
         related_name="reconsiderations",
     )
     closed_at = models.DateTimeField(null=True, blank=True)
+    # Sent by the client as the Idempotency-Key header. A repeated submission
+    # with the same key returns the original request instead of a duplicate.
+    idempotency_key = models.CharField(max_length=128, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ("-submitted_at",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("patient_id", "idempotency_key"),
+                condition=~models.Q(idempotency_key=""),
+                name="unique_submission_idempotency_key",
+            )
+        ]
 
     def save(self, *args: object, **kwargs: object) -> None:
         if self._state.adding and self.deadline_policy_id is None:
@@ -784,6 +794,7 @@ class DSRCaseEvent(models.Model):
         RESPONSE_PUBLISHED = "RESPONSE_PUBLISHED", "Response published to portal"
         DEADLINE_OVERDUE = "DEADLINE_OVERDUE", "Deadline passed"
         EXCEPTION_RECORDED = "EXCEPTION_RECORDED", "Case exception recorded"
+        INTEGRATION_UPDATE = "INTEGRATION_UPDATE", "Integration job update"
 
     dsr = models.ForeignKey(DSRRequest, on_delete=models.PROTECT, related_name="events")
     actor_id = models.CharField(max_length=128)
@@ -950,6 +961,7 @@ class DSRSourceSearch(models.Model):
         PARAS = "PARAS", "PARAS (mock source)"
         CIMS = "CIMS", "CIMS (mock source)"
         ERPS = "ERPS", "ERPS (mock source)"
+        DYNAMICS = "DYNAMICS", "Microsoft Dynamics 365 (mock source)"
         OTHER = "OTHER", "Other mock source"
 
     class Status(models.TextChoices):
@@ -1031,3 +1043,56 @@ class DSRDataQuarantine(models.Model):
 
     class Meta:
         verbose_name = "DSR data quarantine record"
+
+class IntegrationJob(models.Model):
+    """Work for another system, saved in the same transaction as the case
+    change that needs it (the outbox pattern), then run by a Celery worker.
+
+    A job is never lost if the queue is down: the dispatcher re-sends any
+    job that is due. A job that keeps failing ends as FAILED, which shows in
+    the DPO's integrations queue for a person to act on.
+    """
+
+    class Kind(models.TextChoices):
+        SOURCE_SEARCH = "SOURCE_SEARCH", "Source-system search"
+        PATIENT_NOTIFICATION = "PATIENT_NOTIFICATION", "Patient notification"
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Waiting to run"
+        RUNNING = "RUNNING", "Running"
+        SUCCEEDED = "SUCCEEDED", "Succeeded"
+        FAILED = "FAILED", "Failed, needs attention"
+
+    dsr = models.ForeignKey(
+        DSRRequest, on_delete=models.PROTECT, related_name="integration_jobs"
+    )
+    source_search = models.ForeignKey(
+        DSRSourceSearch,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="integration_jobs",
+    )
+    kind = models.CharField(max_length=24, choices=Kind.choices)
+    # The system the job talks to, e.g. "CIMS", "DYNAMICS" or "PATIENT".
+    target = models.CharField(max_length=32)
+    payload = models.JSONField(default=dict, blank=True)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.PENDING
+    )
+    attempts = models.PositiveSmallIntegerField(default=0)
+    max_attempts = models.PositiveSmallIntegerField(default=5)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True)
+    # Counts and references only; never records copied from the source system.
+    result = models.JSONField(default=dict, blank=True)
+    idempotency_key = models.CharField(max_length=160, unique=True)
+    created_by = models.CharField(max_length=128)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at", "-pk")
+        indexes = [models.Index(fields=("status", "next_attempt_at"))]

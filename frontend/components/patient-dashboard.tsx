@@ -79,6 +79,9 @@ export function PatientDashboard({ principalId }: PatientProps) {
   const [refresh, setRefresh] = useState(0);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  // One key per filled-in form. Retrying a failed submit reuses it, so the
+  // API returns the original request instead of creating a duplicate.
+  const [submissionKey, setSubmissionKey] = useState(() => crypto.randomUUID());
 
   useEffect(() => {
     let cancelled = false;
@@ -142,7 +145,7 @@ export function PatientDashboard({ principalId }: PatientProps) {
     try {
       const response = await fetch("/api/requests", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Idempotency-Key": submissionKey },
         body: JSON.stringify({
           request_type: requestType,
           description: description.trim(),
@@ -155,6 +158,7 @@ export function PatientDashboard({ principalId }: PatientProps) {
         throw new Error("detail" in body ? body.detail : "Request could not be submitted.");
       }
       toast.success("Your mock request was submitted.");
+      setSubmissionKey(crypto.randomUUID());
       setDescription("");
       setDepartment("");
       setReconsiderationOf("");

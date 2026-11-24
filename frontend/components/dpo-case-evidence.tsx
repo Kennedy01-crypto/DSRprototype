@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
-import { CheckCircle2, FileText, Gavel, LoaderCircle, SearchCheck, Send } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Bot, CheckCircle2, FileText, Gavel, LoaderCircle, SearchCheck, Send } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -13,12 +13,15 @@ import type {
   DSRCaseDetailResponse,
   DSRResponseDraft,
   DSRSourceSearch,
+  IntegrationJob,
+  IntegrationJobsResponse,
 } from "@/lib/types";
 
 const SOURCE_SYSTEMS = [
   ["PARAS", "PARAS (mock source)"],
   ["CIMS", "CIMS (mock source)"],
   ["ERPS", "ERPS (mock source)"],
+  ["DYNAMICS", "Microsoft Dynamics 365 (mock source)"],
   ["OTHER", "Other mock source"],
 ] as const;
 const SEARCH_STATUSES = [
@@ -62,6 +65,18 @@ function searchBadge(status: string): "default" | "secondary" | "destructive" | 
   return "outline";
 }
 
+function jobLine(job: IntegrationJob): string {
+  if (job.status === "PENDING" && job.attempts > 0) {
+    return `Automated search retrying: attempt ${job.attempts} of ${job.max_attempts} failed, next try ${formatDate(job.next_attempt_at)}.`;
+  }
+  if (job.status === "PENDING") return "Automated search queued.";
+  if (job.status === "RUNNING") return "Automated search running…";
+  if (job.status === "FAILED") {
+    return `Automated search failed after ${job.attempts} attempt(s). Retry it from Integrations, or search by hand.`;
+  }
+  return "Completed by automated search.";
+}
+
 async function send(url: string, method: "POST" | "PATCH", payload?: object): Promise<void> {
   const response = await fetch(url, {
     method,
@@ -96,6 +111,51 @@ export function DpoCaseEvidence({
   const [busy, setBusy] = useState<string | null>(null);
   const usedSystems = new Set(searches.map((item) => sourceCode(item.source_system)));
   const freeSystems = SOURCE_SYSTEMS.filter(([code]) => !usedSystems.has(code));
+  const jobs = data.integration_jobs ?? [];
+  const latestJobFor = (searchId: number) => jobs.find((job) => job.source_search === searchId);
+  const automatable = SOURCE_SYSTEMS.filter(([code]) => {
+    if (!(data.automated_source_systems ?? []).includes(code)) return false;
+    const existing = searches.find((item) => sourceCode(item.source_system) === code);
+    if (!existing) return true;
+    if (existing.status === "Complete") return false;
+    const job = latestJobFor(existing.id);
+    return !job || job.status === "FAILED" || job.status === "SUCCEEDED";
+  });
+  const [autoSystem, setAutoSystem] = useState<string>("");
+
+  // While a job is queued or running, check the (small) jobs list every few
+  // seconds and reload the case once when something finishes. Polling only
+  // the jobs list keeps unsaved edits elsewhere on the page intact.
+  const onChangedRef = useRef(onChanged);
+  useEffect(() => {
+    onChangedRef.current = onChanged;
+  });
+  const activeJobIds = jobs
+    .filter((job) => job.status === "PENDING" || job.status === "RUNNING")
+    .map((job) => job.id)
+    .join(",");
+  useEffect(() => {
+    if (!activeJobIds) return;
+    let stopped = false;
+    const timer = window.setInterval(async () => {
+      try {
+        const response = await fetch(`/api/integration-jobs?request=${id}`, { cache: "no-store" });
+        if (!response.ok) return;
+        const body = (await response.json()) as IntegrationJobsResponse;
+        const stillActive = body.jobs
+          .filter((job) => job.status === "PENDING" || job.status === "RUNNING")
+          .map((job) => job.id)
+          .join(",");
+        if (!stopped && stillActive !== activeJobIds) await onChangedRef.current();
+      } catch {
+        // Try again on the next tick.
+      }
+    }, 4000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [activeJobIds, id]);
   const [newSystem, setNewSystem] = useState<string>("");
   const [newStatus, setNewStatus] = useState("PENDING");
   const [newSummary, setNewSummary] = useState("");
@@ -138,6 +198,22 @@ export function DpoCaseEvidence({
         setNewEvidence("");
       },
       "Source search recorded.",
+    );
+  }
+
+  function runAutomatedSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const system = autoSystem || automatable[0]?.[0];
+    if (!system) return;
+    void run(
+      "search-auto",
+      async () => {
+        await send(`/api/requests/${id}/source-searches/automated`, "POST", {
+          source_system: system,
+        });
+        setAutoSystem("");
+      },
+      "Automated search queued. The result appears here when it finishes.",
     );
   }
 
@@ -233,8 +309,8 @@ export function DpoCaseEvidence({
             Source searches
           </CardTitle>
           <CardDescription>
-            One line per system. Staff search the system themselves and record the result here.
-            To approve privacy review, at least one search must exist and every search must be
+            One line per system. Search a connected system automatically, or search by hand and
+            record the result. To approve privacy review, at least one search must exist and every search must be
             Complete.
           </CardDescription>
         </CardHeader>
@@ -254,6 +330,23 @@ export function DpoCaseEvidence({
                   <p className="mt-1 text-xs text-muted-foreground">
                     Updated by {search.updated_by} · {formatDate(search.updated_at)}
                   </p>
+                  {(() => {
+                    const job = latestJobFor(search.id);
+                    if (!job) return null;
+                    return (
+                      <p
+                        className={`mt-2 flex items-start gap-1.5 text-xs ${
+                          job.status === "FAILED" ? "text-rose-700" : "text-muted-foreground"
+                        }`}
+                      >
+                        <Bot className="mt-0.5 size-3.5 shrink-0" />
+                        <span>
+                          {jobLine(job)}
+                          {job.last_error && job.status !== "SUCCEEDED" ? ` Last error: ${job.last_error}` : ""}
+                        </span>
+                      </p>
+                    );
+                  })()}
                   {!completed && (
                     <form
                       className="mt-3 grid gap-2 sm:grid-cols-[140px_1fr]"
@@ -304,6 +397,34 @@ export function DpoCaseEvidence({
               ))}
             </ul>
           )}
+          {!completed && automatable.length > 0 && (
+            <form
+              onSubmit={runAutomatedSearch}
+              className="grid gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 sm:grid-cols-[1fr_auto] sm:items-end"
+            >
+              <label className="space-y-1 text-sm font-medium">
+                Search a connected system automatically
+                <select
+                  id="auto-search-system"
+                  value={autoSystem || automatable[0][0]}
+                  onChange={(event) => setAutoSystem(event.target.value)}
+                  className={selectClass}
+                >
+                  {automatable.map(([code, label]) => (
+                    <option key={code} value={code}>{label}</option>
+                  ))}
+                </select>
+              </label>
+              <Button type="submit" disabled={busy !== null} className="gap-2">
+                <Bot className="size-4" />
+                {busy === "search-auto" ? "Queuing…" : "Search automatically"}
+              </Button>
+              <p className="text-xs text-muted-foreground sm:col-span-2">
+                The connector returns a record count and a reference only, never the records.
+                Failed searches are retried automatically, then marked Blocked.
+              </p>
+            </form>
+          )}
           {!completed && freeSystems.length > 0 && (
             <form onSubmit={addSearch} className="grid gap-2 border-t pt-4 sm:grid-cols-2">
               <label className="space-y-1 text-sm font-medium">
@@ -336,7 +457,7 @@ export function DpoCaseEvidence({
                 id="new-search-summary"
                 value={newSummary}
                 onChange={(event) => setNewSummary(event.target.value)}
-                placeholder="Summary (required unless Pending). For MS Dynamics, choose Other and name it here."
+                placeholder="Summary of what was found (required unless Pending)"
                 className="sm:col-span-2"
                 maxLength={4000}
               />

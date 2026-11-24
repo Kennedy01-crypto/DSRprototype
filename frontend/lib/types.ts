@@ -99,6 +99,10 @@ export interface DSRCaseDetailResponse {
   response_versions?: DSRResponseVersion[];
   /** DPO view only: why a response can't be finalized or published yet, or null. */
   response_readiness?: string | null;
+  /** DPO view only: source-system codes that can be searched automatically. */
+  automated_source_systems?: string[];
+  /** DPO view only: this case's integration jobs, newest first. */
+  integration_jobs?: IntegrationJob[];
   review_material?: {
     response_version: number;
     response_content: string;
@@ -228,4 +232,31 @@ export interface PublishedResponse {
     published_by: string;
     published_at: string;
   };
+}
+
+export type IntegrationJobStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
+
+export interface IntegrationJob {
+  id: number;
+  request_id: number;
+  source_search: number | null;
+  kind: "SOURCE_SEARCH" | "PATIENT_NOTIFICATION";
+  kind_label: string;
+  /** System code, e.g. "CIMS", "DYNAMICS", or "PATIENT" for notifications. */
+  target: string;
+  status: IntegrationJobStatus;
+  status_label: string;
+  attempts: number;
+  max_attempts: number;
+  next_attempt_at: string;
+  last_error: string;
+  result: Record<string, unknown>;
+  created_by: string;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface IntegrationJobsResponse {
+  counts: Record<IntegrationJobStatus, number>;
+  jobs: IntegrationJob[];
 }

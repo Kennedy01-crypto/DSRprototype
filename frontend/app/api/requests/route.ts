@@ -62,9 +62,11 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
+    const idempotencyKey = request.headers.get("Idempotency-Key");
     const upstream = await backendRequest("/api/v1/dsrs/submit/", session, {
       method: "POST",
       body: JSON.stringify(body),
+      ...(idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : {}),
     });
     if (!upstream.ok) {
       const errorBody = await upstream.json().catch(() => null);

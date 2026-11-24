@@ -28,6 +28,8 @@ Authorization: Bearer patient:<patient_id>
 Content-Type: application/json
 ```
 
+Optional header: `Idempotency-Key: <1-128 letters, digits, _ . : ->`. Send one key per filled-in form and reuse it when retrying. A repeat with the same key returns the original request with `200 OK` instead of creating a duplicate (`201 Created`). Keys are scoped to the patient. The Next.js portal sends one automatically.
+
 Request body:
 
 ```json
@@ -74,6 +76,24 @@ Requires a DPO token. `GET` lists the configured internal target and optional le
 ```
 
 The policy is used when new requests are submitted. Deadline monitoring records overdue events but does not change workflow state. Waiting for a patient or internal team does not pause or reset either deadline; there is currently no clock-pause mechanism.
+
+## Integrations
+
+Automated source searches and patient notifications run as **integration jobs**. A job is saved in the same database transaction as the case change that needs it, then run by the Celery worker. Calls to other systems happen outside any database transaction.
+
+- `POST /api/v1/dpo/dsrs/<id>/source-searches/automated/` with `{"source_system": "CIMS"}` queues a connector search and returns `202 Accepted` with the job. The case's search line is set to Pending, which keeps the privacy-review gate shut until the result arrives. Asking again while a search is queued returns the same job. Returns `409` for systems with no connector, completed searches, or completed cases.
+- `GET /api/v1/dpo/integration-jobs/?status=FAILED&request=<id>` lists jobs with per-status counts. `FAILED` is the "needs attention" queue.
+- `POST /api/v1/dpo/integration-jobs/<job_id>/retry/` runs a failed job again from the start (`202`), and returns its search from Blocked to Pending.
+
+How jobs behave:
+
+- **Success** (search): the search line becomes Complete with the connector's summary and reference, `updated_by` is `integration:<SYSTEM>`. If staff already changed the line by hand, their entry is kept.
+- **Temporary failure** (outage, timeout, any unexpected error): retried after 30s, 1m, 2m, 4m… capped at 1 hour, up to 5 attempts for searches and 8 for notifications.
+- **Permanent failure** (for example rejected credentials) or attempts used up: the job becomes `FAILED`, its search becomes Blocked, and a case event records the error.
+- **Lost or stuck jobs**: Celery Beat runs a dispatcher every minute that re-sends due jobs and frees jobs whose worker died mid-run.
+- **Patient notifications** are queued when a response is published, when the DPO sends a portal message, and when an exception notice is sent. The message only says there is an update on `DSR-<id>` and asks the patient to sign in; it never includes case details. The prototype's notifier sends nothing.
+
+Connectors return a record count and a reference only, never record contents. All configured connectors are mocks (`dsr/integrations/mock.py`): a patient ID containing `outage` simulates a system that is down, and one containing `badcreds` simulates rejected credentials.
 
 ## User interface
 

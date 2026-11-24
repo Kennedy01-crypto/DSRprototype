@@ -1,6 +1,9 @@
 from django.urls import path
 
 from .views import (
+    DSRAutomatedSearchView,
+    IntegrationJobListView,
+    IntegrationJobRetryView,
     DSRAssignmentView,
     DSRJurisdictionView,
     DSRCaseDetailView,
@@ -85,6 +88,21 @@ urlpatterns = [
         "api/v1/dpo/dsrs/<int:pk>/source-searches/",
         DSRSourceSearchListView.as_view(),
         name="dpo-dsr-source-searches",
+    ),
+    path(
+        "api/v1/dpo/dsrs/<int:pk>/source-searches/automated/",
+        DSRAutomatedSearchView.as_view(),
+        name="dpo-dsr-automated-search",
+    ),
+    path(
+        "api/v1/dpo/integration-jobs/",
+        IntegrationJobListView.as_view(),
+        name="dpo-integration-jobs",
+    ),
+    path(
+        "api/v1/dpo/integration-jobs/<int:job_pk>/retry/",
+        IntegrationJobRetryView.as_view(),
+        name="dpo-integration-job-retry",
     ),
     path(
         "api/v1/dpo/dsrs/<int:pk>/source-searches/<int:search_pk>/",

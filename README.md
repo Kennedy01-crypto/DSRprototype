@@ -116,6 +116,24 @@ To load the synthetic acceptance pack, run `docker compose exec web python manag
 
 Run the backend tests with `docker compose exec web python manage.py test dsr`.
 
+## Integrations
+
+Searches of source systems and patient notifications go through adapters in `dsr/integrations/`, chosen in settings:
+
+```python
+DSR_SOURCE_CONNECTORS = {
+    "PARAS": "dsr.integrations.mock.MockSourceConnector",
+    "CIMS": "dsr.integrations.mock.MockSourceConnector",
+    "ERPS": "dsr.integrations.mock.MockSourceConnector",
+    "DYNAMICS": "dsr.integrations.mock.MockSourceConnector",
+}
+DSR_PATIENT_NOTIFIER = "dsr.integrations.mock.PortalOnlyNotifier"
+```
+
+To connect a real system, subclass `SourceConnector` in `dsr/integrations/base.py`, implement `search()`, and point the setting at the new class. The rules each connector must follow (counts and references only, which errors mean "retry" and which mean "stop") are written at the top of that file. The workflow code does not change.
+
+Jobs retry on their own and end in the DPO's **Integrations** page when they give up. See [API_README.md](API_README.md#integrations) for the exact behaviour.
+
 ## Celery and SLA monitoring
 
 The project includes a Beat schedule that runs `monitor_sla_deadlines` every 15 minutes. It records overdue events for active internal targets and configured legal deadlines; it does not change request states or pause/reset clocks. Waiting for internal teams is an operational delay, not a reason to stop a deadline. Confirm the applicable jurisdiction's legal timeline with authorized privacy/legal owners before setting legal deadlines or using this prototype beyond mock data.
@@ -129,6 +147,7 @@ The project includes a Beat schedule that runs `monitor_sla_deadlines` every 15 
 - `dsr/views.py` - thin API views: check role and input, call one service, serialize the result
 - `dsr/exceptions.py` - workflow errors and their HTTP mapping
 - `dsr/permissions.py` - role gate for every API view
+- `dsr/integrations/` - connector and notifier interfaces, mock implementations, and the settings-driven registry
 - `frontend/` - Next.js user interface
 - `docker-compose.yml` - service orchestration for local development
 - `Dockerfile` - container build definition

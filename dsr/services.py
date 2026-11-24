@@ -10,11 +10,13 @@ rules that depend on the case's current state live here.
 
 from __future__ import annotations
 
+import logging
+import uuid
 from collections.abc import Iterable, Mapping
 from datetime import timedelta
 from typing import Any
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django_fsm import TransitionNotAllowed
 
@@ -23,6 +25,12 @@ from .exceptions import (
     WorkflowConflict,
     WorkflowForbidden,
     WorkflowValidationError,
+)
+from .integrations.base import ConnectorError, SubjectRef
+from .integrations.registry import (
+    automated_source_systems,
+    get_connector,
+    get_patient_notifier,
 )
 from .models import (
     DSRCaseEvent,
@@ -38,8 +46,11 @@ from .models import (
     DSRResponseVersion,
     DSRReviewTask,
     DSRSourceSearch,
+    IntegrationJob,
 )
 from .selectors import build_response_draft
+
+logger = logging.getLogger(__name__)
 
 # Fields any transition may change; saved together after every transition.
 TRANSITION_FIELDS = (
@@ -87,9 +98,35 @@ def _canonical_case_for(dsr: DSRRequest, duplicate_of_id: int | None) -> DSRRequ
 # --------------------------------------------------------------------------
 
 
-@transaction.atomic
-def submit_request(patient_id: str, data: Mapping[str, Any]) -> DSRRequest:
-    return DSRRequest.objects.create(patient_id=patient_id, **data)
+def submit_request(
+    patient_id: str, data: Mapping[str, Any], *, idempotency_key: str = ""
+) -> tuple[DSRRequest, bool]:
+    """Create a request. Returns ``(request, created)``.
+
+    With an idempotency key, a repeat of the same submission (a retried
+    network call, a double click) returns the original request instead of
+    creating a duplicate. The first submission's content wins.
+    """
+    if idempotency_key:
+        existing = DSRRequest.objects.filter(
+            patient_id=patient_id, idempotency_key=idempotency_key
+        ).first()
+        if existing is not None:
+            return existing, False
+    try:
+        with transaction.atomic():
+            dsr = DSRRequest.objects.create(
+                patient_id=patient_id, idempotency_key=idempotency_key, **data
+            )
+        return dsr, True
+    except IntegrityError:
+        if not idempotency_key:
+            raise
+        # Two identical submissions raced; the other one won.
+        return (
+            DSRRequest.objects.get(patient_id=patient_id, idempotency_key=idempotency_key),
+            False,
+        )
 
 
 @transaction.atomic
@@ -147,8 +184,9 @@ def send_patient_update(dsr_id: int, *, actor_id: str, message: str) -> DSRCommu
         dsr,
         actor_id,
         DSRCaseEvent.EventType.PATIENT_UPDATE_RECORDED,
-        "Patient update recorded in the prototype. No external message was sent.",
+        "Patient update recorded in the portal.",
     )
+    _queue_patient_notification(dsr, actor_id=actor_id, reason="New message from the DPO")
     return communication
 
 
@@ -462,9 +500,9 @@ def publish_response(dsr_id: int, version_id: int, *, actor_id: str) -> DSRRespo
         dsr,
         actor_id,
         DSRCaseEvent.EventType.RESPONSE_PUBLISHED,
-        f"Response version {version.version} published to the patient portal. "
-        "No external message was sent.",
+        f"Response version {version.version} published to the patient portal.",
     )
+    _queue_patient_notification(dsr, actor_id=actor_id, reason="Response published")
     return version
 
 
@@ -546,6 +584,9 @@ def record_case_exception(
             direction=DSRCommunication.Direction.DPO_TO_PATIENT,
             message=notification,
             created_by=actor_id,
+        )
+        _queue_patient_notification(
+            dsr, actor_id=actor_id, reason=f"{exception.get_exception_type_display()} notice"
         )
     if exception_type == Type.CLARIFICATION:
         dsr.request_information(actor_id=actor_id, reason=data["reason"])
@@ -838,3 +879,290 @@ def apply_transition(
             f"Final resolution recorded: {dsr.get_resolution_status_display()}.",
         )
     return dsr
+
+
+# --------------------------------------------------------------------------
+# Integration jobs (outbox)
+# --------------------------------------------------------------------------
+#
+# A job row is written in the same transaction as the case change that needs
+# it, so the two can't disagree. After commit the job is handed to Celery;
+# if that hand-off fails (Redis down), the every-minute dispatcher finds the
+# job anyway. Calls to other systems happen outside any database transaction
+# so a slow system never holds a lock on the case.
+
+SEARCH_MAX_ATTEMPTS = 5
+NOTIFICATION_MAX_ATTEMPTS = 8
+RUNNING_TIMEOUT = timedelta(minutes=10)
+
+
+def _retry_delay(attempts: int) -> timedelta:
+    """30s, 1m, 2m, 4m ... capped at 1 hour."""
+    return timedelta(seconds=min(30 * 2 ** max(attempts - 1, 0), 3600))
+
+
+def _hand_to_worker(job_id: int) -> None:
+    from .tasks import run_integration_job
+
+    try:
+        run_integration_job.delay(job_id)
+    except Exception:  # The dispatcher will pick the job up.
+        logger.warning("Could not queue integration job %s; the dispatcher will retry.", job_id)
+
+
+def _enqueue(job: IntegrationJob) -> None:
+    transaction.on_commit(lambda: _hand_to_worker(job.pk))
+
+
+def _source_label(system: str) -> str:
+    return DSRSourceSearch.SourceSystem(system).label
+
+
+def _queue_patient_notification(dsr: DSRRequest, *, actor_id: str, reason: str) -> IntegrationJob:
+    """Tell the patient to check the portal. The message carries no case details."""
+    job = IntegrationJob.objects.create(
+        dsr=dsr,
+        kind=IntegrationJob.Kind.PATIENT_NOTIFICATION,
+        target="PATIENT",
+        payload={
+            "reason": reason,
+            "message": (
+                f"There is a new update on your request DSR-{dsr.pk}. "
+                "Sign in to the patient portal to read it."
+            ),
+        },
+        max_attempts=NOTIFICATION_MAX_ATTEMPTS,
+        idempotency_key=f"notify:{dsr.pk}:{uuid.uuid4().hex}",
+        created_by=actor_id,
+    )
+    _enqueue(job)
+    return job
+
+
+@transaction.atomic
+def request_automated_search(dsr_id: int, *, actor_id: str, source_system: str) -> IntegrationJob:
+    """Queue a connector search of one system for this case.
+
+    The search line is set to Pending until the job finishes, which keeps the
+    privacy-review gate closed until the result is in. Asking again while a
+    search is queued returns the job already queued.
+    """
+    dsr = _lock_case(dsr_id)
+    if dsr.major_status == "Completed":
+        raise WorkflowConflict("Searches cannot be started on a completed case.")
+    if source_system not in automated_source_systems():
+        raise WorkflowConflict(
+            f"No automated connector is configured for {source_system}. "
+            "Search the system by hand and record the result."
+        )
+    label = _source_label(source_system)
+    search = (
+        DSRSourceSearch.objects.select_for_update()
+        .filter(dsr=dsr, source_system=source_system)
+        .first()
+    )
+    if search is not None:
+        if search.status == DSRSourceSearch.Status.COMPLETE:
+            raise WorkflowConflict(f"The {label} search is already complete.")
+        active = search.integration_jobs.filter(
+            status__in=(IntegrationJob.Status.PENDING, IntegrationJob.Status.RUNNING)
+        ).first()
+        if active is not None:
+            return active
+        search.status = DSRSourceSearch.Status.PENDING
+        search.summary = "Automated search queued."
+        search.updated_by = actor_id
+        search.save()
+    else:
+        search = DSRSourceSearch.objects.create(
+            dsr=dsr,
+            source_system=source_system,
+            status=DSRSourceSearch.Status.PENDING,
+            summary="Automated search queued.",
+            created_by=actor_id,
+            updated_by=actor_id,
+        )
+    job = IntegrationJob.objects.create(
+        dsr=dsr,
+        source_search=search,
+        kind=IntegrationJob.Kind.SOURCE_SEARCH,
+        target=source_system,
+        payload={"case_id": dsr.pk},
+        max_attempts=SEARCH_MAX_ATTEMPTS,
+        idempotency_key=f"search:{search.pk}:{uuid.uuid4().hex}",
+        created_by=actor_id,
+    )
+    record_case_event(
+        dsr,
+        actor_id,
+        DSRCaseEvent.EventType.INTEGRATION_UPDATE,
+        f"Automated {label} search queued.",
+    )
+    _enqueue(job)
+    return job
+
+
+def _call_external_system(job: IntegrationJob) -> dict[str, Any]:
+    if job.kind == IntegrationJob.Kind.SOURCE_SEARCH:
+        connector = get_connector(job.target)
+        found = connector.search(SubjectRef(patient_id=job.dsr.patient_id, case_id=job.dsr_id))
+        return {
+            "records_found": found.records_found,
+            "summary": found.summary,
+            "reference": found.reference,
+        }
+    if job.kind == IntegrationJob.Kind.PATIENT_NOTIFICATION:
+        notifier = get_patient_notifier()
+        reference = notifier.notify(
+            patient_id=job.dsr.patient_id,
+            case_id=job.dsr_id,
+            message=str(job.payload.get("message", "")),
+        )
+        return {"channel": notifier.channel, "reference": reference}
+    raise ConnectorError(f"Unknown job kind {job.kind}.")
+
+
+def run_integration_job(job_id: int) -> str | None:
+    """Run one due job. Safe to call twice: only a PENDING, due job runs.
+
+    Returns the job's new status, or None if there was nothing to do.
+    """
+    now = timezone.now()
+    with transaction.atomic():
+        job = IntegrationJob.objects.select_for_update().filter(pk=job_id).first()
+        if job is None or job.status != IntegrationJob.Status.PENDING or job.next_attempt_at > now:
+            return None
+        job.status = IntegrationJob.Status.RUNNING
+        job.attempts += 1
+        job.started_at = now
+        job.save(update_fields=("status", "attempts", "started_at", "updated_at"))
+    try:
+        result = _call_external_system(job)
+    except ConnectorError as error:
+        return _finish_failed(job_id, str(error), permanent=True)
+    except Exception as error:  # Outages, timeouts, anything unexpected: retry.
+        return _finish_failed(job_id, f"{type(error).__name__}: {error}", permanent=False)
+    return _finish_succeeded(job_id, result)
+
+
+def _lock_job_and_case(job_id: int) -> tuple[IntegrationJob, DSRRequest]:
+    dsr_id = IntegrationJob.objects.values_list("dsr_id", flat=True).get(pk=job_id)
+    dsr = _lock_case(dsr_id)  # Case first, then job: same order everywhere.
+    return IntegrationJob.objects.select_for_update().get(pk=job_id), dsr
+
+
+@transaction.atomic
+def _finish_succeeded(job_id: int, result: dict[str, Any]) -> str:
+    job, dsr = _lock_job_and_case(job_id)
+    job.status = IntegrationJob.Status.SUCCEEDED
+    job.result = result
+    job.last_error = ""
+    job.completed_at = timezone.now()
+    job.save()
+    if job.kind == IntegrationJob.Kind.SOURCE_SEARCH and job.source_search_id:
+        label = _source_label(job.target)
+        search = DSRSourceSearch.objects.select_for_update().get(pk=job.source_search_id)
+        if search.status == DSRSourceSearch.Status.PENDING:
+            search.status = DSRSourceSearch.Status.COMPLETE
+            search.summary = result["summary"]
+            search.evidence_reference = result["reference"]
+            search.updated_by = f"integration:{job.target}"
+            search.save()
+            summary = (
+                f"Automated {label} search completed: "
+                f"{result['records_found']} record(s) matched."
+            )
+        else:
+            summary = (
+                f"Automated {label} search finished, but staff had already updated "
+                "the search; their entry was kept."
+            )
+        record_case_event(dsr, "integration", DSRCaseEvent.EventType.INTEGRATION_UPDATE, summary)
+    else:
+        record_case_event(
+            dsr,
+            "integration",
+            DSRCaseEvent.EventType.INTEGRATION_UPDATE,
+            f"Patient notified ({result['channel']}), reference {result['reference']}.",
+        )
+    return job.status
+
+
+@transaction.atomic
+def _finish_failed(job_id: int, error: str, *, permanent: bool) -> str:
+    job, dsr = _lock_job_and_case(job_id)
+    job.last_error = error[:2000]
+    if not permanent and job.attempts < job.max_attempts:
+        job.status = IntegrationJob.Status.PENDING
+        job.next_attempt_at = timezone.now() + _retry_delay(job.attempts)
+        job.save()
+        return job.status
+    job.status = IntegrationJob.Status.FAILED
+    job.completed_at = timezone.now()
+    job.save()
+    if job.kind == IntegrationJob.Kind.SOURCE_SEARCH and job.source_search_id:
+        search = DSRSourceSearch.objects.select_for_update().get(pk=job.source_search_id)
+        if search.status == DSRSourceSearch.Status.PENDING:
+            search.status = DSRSourceSearch.Status.BLOCKED
+            search.summary = (
+                f"Automated search failed: {error[:300]} Retry it from the integrations "
+                "queue, or search by hand and record the result."
+            )
+            search.updated_by = f"integration:{job.target}"
+            search.save()
+    record_case_event(
+        dsr,
+        "integration",
+        DSRCaseEvent.EventType.INTEGRATION_UPDATE,
+        f"{job.get_kind_display()} for {job.target} failed after {job.attempts} "
+        f"attempt(s): {error[:200]}",
+    )
+    return job.status
+
+
+def due_integration_job_ids(limit: int = 200) -> list[int]:
+    """Jobs to (re)send now. Also frees jobs whose worker died mid-run."""
+    now = timezone.now()
+    IntegrationJob.objects.filter(
+        status=IntegrationJob.Status.RUNNING, started_at__lt=now - RUNNING_TIMEOUT
+    ).update(status=IntegrationJob.Status.PENDING, next_attempt_at=now, updated_at=now)
+    return list(
+        IntegrationJob.objects.filter(
+            status=IntegrationJob.Status.PENDING, next_attempt_at__lte=now
+        )
+        .order_by("next_attempt_at", "pk")
+        .values_list("pk", flat=True)[:limit]
+    )
+
+
+@transaction.atomic
+def retry_integration_job(job_id: int, *, actor_id: str) -> IntegrationJob:
+    """A person asks for a failed job to run again from the start."""
+    if not IntegrationJob.objects.filter(pk=job_id).exists():
+        raise CaseNotFound("No integration job matches the given query.")
+    job, dsr = _lock_job_and_case(job_id)
+    if job.status != IntegrationJob.Status.FAILED:
+        raise WorkflowConflict("Only failed jobs can be retried.")
+    if job.kind == IntegrationJob.Kind.SOURCE_SEARCH and dsr.major_status == "Completed":
+        raise WorkflowConflict("Searches cannot be retried on a completed case.")
+    job.status = IntegrationJob.Status.PENDING
+    job.attempts = 0
+    job.next_attempt_at = timezone.now()
+    job.last_error = ""
+    job.completed_at = None
+    job.save()
+    if job.source_search_id:
+        search = DSRSourceSearch.objects.select_for_update().get(pk=job.source_search_id)
+        if search.status == DSRSourceSearch.Status.BLOCKED:
+            search.status = DSRSourceSearch.Status.PENDING
+            search.summary = "Automated search queued again."
+            search.updated_by = actor_id
+            search.save()
+    record_case_event(
+        dsr,
+        actor_id,
+        DSRCaseEvent.EventType.INTEGRATION_UPDATE,
+        f"{job.get_kind_display()} for {job.target} queued again.",
+    )
+    _enqueue(job)
+    return job

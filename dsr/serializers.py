@@ -18,6 +18,7 @@ from .models import (
     DSRResponseVersion,
     DSRReviewTask,
     DSRSourceSearch,
+    IntegrationJob,
 )
 
 
@@ -650,3 +651,33 @@ class DSRPublishedResponseReadSerializer(serializers.ModelSerializer):
     class Meta:
         model = DSRResponseVersion
         fields = ("version", "content", "publication")
+
+class IntegrationJobReadSerializer(serializers.ModelSerializer):
+    request_id = serializers.IntegerField(source="dsr_id", read_only=True)
+    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+
+    class Meta:
+        model = IntegrationJob
+        fields = (
+            "id",
+            "request_id",
+            "source_search",
+            "kind",
+            "kind_label",
+            "target",
+            "status",
+            "status_label",
+            "attempts",
+            "max_attempts",
+            "next_attempt_at",
+            "last_error",
+            "result",
+            "created_by",
+            "created_at",
+            "completed_at",
+        )
+
+
+class AutomatedSearchSerializer(serializers.Serializer):
+    source_system = serializers.ChoiceField(choices=DSRSourceSearch.SourceSystem.choices)

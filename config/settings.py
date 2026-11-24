@@ -61,4 +61,19 @@ CELERY_BEAT_SCHEDULE = {
         "task": "dsr.tasks.monitor_sla_deadlines",
         "schedule": 900.0,
     },
+    # Re-sends integration jobs that are due (retries, or lost messages).
+    "dispatch-integration-jobs-every-minute": {
+        "task": "dsr.tasks.dispatch_integration_jobs",
+        "schedule": 60.0,
+    },
 }
+
+# Source systems that can be searched automatically, by source-system code.
+# Replace a mock with a real connector class here; see dsr/integrations/base.py.
+DSR_SOURCE_CONNECTORS = {
+    "PARAS": "dsr.integrations.mock.MockSourceConnector",
+    "CIMS": "dsr.integrations.mock.MockSourceConnector",
+    "ERPS": "dsr.integrations.mock.MockSourceConnector",
+    "DYNAMICS": "dsr.integrations.mock.MockSourceConnector",
+}
+DSR_PATIENT_NOTIFIER = "dsr.integrations.mock.PortalOnlyNotifier"
