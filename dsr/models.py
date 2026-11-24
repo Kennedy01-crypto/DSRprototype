@@ -9,6 +9,8 @@ from django.utils import timezone
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django_fsm import RETURN_VALUE, FSMField, TransitionNotAllowed, transition
 
+from . import deadlines
+
 
 class DSRRequest(models.Model):
     class State(models.TextChoices):
@@ -94,6 +96,13 @@ class DSRRequest(models.Model):
     # Sent by the client as the Idempotency-Key header. A repeated submission
     # with the same key returns the original request instead of a duplicate.
     idempotency_key = models.CharField(max_length=128, blank=True, default="")
+    # Raised by one on every change to the case (see services._lock_case).
+    # Clients send it back as If-Match so a stale screen can't overwrite
+    # someone else's newer change.
+    revision = models.PositiveIntegerField(default=1)
+    # Set while the deadline clocks are paused under the policy; both
+    # deadlines move forward by the paused time when the clock resumes.
+    deadline_paused_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -118,31 +127,34 @@ class DSRRequest(models.Model):
                 raise DSRDeadlinePolicy.DoesNotExist(
                     "No effective deadline policy is configured for this jurisdiction and request type."
                 )
+        policy = self.deadline_policy
+        submitted_at = self.submitted_at or timezone.now()
         if self.response_due_at is None:
-            submitted_at = self.submitted_at or timezone.now()
-            self.response_due_at = submitted_at + self.sla_duration()
+            self.response_due_at = deadlines.add_days(
+                submitted_at, policy.internal_target_days, calendar_days=policy.calendar_days
+            )
         if self._state.adding and self.legal_deadline_at is None:
-            if self.deadline_policy.legal_deadline_days is not None:
-                submitted_at = self.submitted_at or timezone.now()
-                self.legal_deadline_at = submitted_at + timedelta(
-                    days=self.deadline_policy.legal_deadline_days
+            if policy.legal_deadline_days is not None:
+                self.legal_deadline_at = deadlines.add_days(
+                    submitted_at, policy.legal_deadline_days, calendar_days=policy.calendar_days
                 )
         super().save(*args, **kwargs)
 
-    def sla_duration(self) -> timedelta:
-        policy = self.deadline_policy or DSRDeadlinePolicy.objects.filter(
-            request_type=self.request_type,
-            jurisdiction_code=self.jurisdiction_code,
-            effective_at__lte=timezone.now(),
-        ).order_by("-version").first()
-        if policy is None:
-            raise DSRDeadlinePolicy.DoesNotExist(
-                "No effective deadline policy is configured for this jurisdiction and request type."
-            )
-        return timedelta(days=policy.internal_target_days)
+    @property
+    def deadline_clock_paused(self) -> bool:
+        return self.deadline_paused_at is not None
+
+    def _clock_now(self):
+        """While paused, time stands still at the moment of pausing."""
+        return self.deadline_paused_at or timezone.now()
 
     def time_remaining(self) -> timedelta:
-        return self.response_due_at - timezone.now()
+        return self.response_due_at - self._clock_now()
+
+    def legal_time_remaining(self) -> timedelta | None:
+        if self.legal_deadline_at is None:
+            return None
+        return self.legal_deadline_at - self._clock_now()
 
     @property
     def major_status(self) -> str:
@@ -214,7 +226,8 @@ class DSRRequest(models.Model):
     @property
     def is_overdue(self) -> bool:
         return (
-            self.state
+            self.deadline_paused_at is None
+            and self.state
             in {
                 self.State.SUBMITTED,
                 self.State.ACCEPTED,
@@ -729,7 +742,8 @@ class DSRCaseException(models.Model):
         OUT_OF_SCOPE = "OUT_OF_SCOPE", "Out of scope"
         UNABLE_TO_PROCESS = "UNABLE_TO_PROCESS", "Unable to process"
         EXTENSION = "EXTENSION", "Deadline extension"
-        DEADLINE_PAUSE = "DEADLINE_PAUSE", "Deadline pause"
+        DEADLINE_PAUSE = "DEADLINE_PAUSE", "Deadline clock paused"
+        DEADLINE_RESUME = "DEADLINE_RESUME", "Deadline clock resumed"
 
     dsr = models.ForeignKey(
         DSRRequest,

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { backendError, backendRequest } from "@/lib/backend";
+import { backendError, backendErrorBody, backendRequest, caseHeaders } from "@/lib/backend";
 import { getDemoSession } from "@/lib/session";
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -46,17 +46,16 @@ async function proxyRequest(
   session: NonNullable<Awaited<ReturnType<typeof getDemoSession>>>,
   method: "GET" | "PATCH" | "POST",
   body?: unknown,
+  request?: Request,
 ) {
   try {
     const upstream = await backendRequest(path, session, {
       method,
+      headers: caseHeaders(request),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     if (!upstream.ok) {
-      return NextResponse.json(
-        { detail: await backendError(upstream) },
-        { status: upstream.status },
-      );
+      return NextResponse.json(await backendErrorBody(upstream), { status: upstream.status });
     }
     return NextResponse.json(await upstream.json(), { status: upstream.status });
   } catch {
@@ -136,7 +135,7 @@ export async function PATCH(request: Request, context: RouteContext) {
   } catch {
     return NextResponse.json({ detail: "Invalid JSON body." }, { status: 400 });
   }
-  return proxyRequest(`/api/v1/dpo/dsrs/${id}/assignment/`, session, "POST", body);
+  return proxyRequest(`/api/v1/dpo/dsrs/${id}/assignment/`, session, "POST", body, request);
 }
 
 export async function POST(request: Request, context: RouteContext) {
@@ -166,5 +165,5 @@ export async function POST(request: Request, context: RouteContext) {
     session.role === "dpo" || session.role === "independent_reviewer"
       ? `/api/v1/dpo/dsrs/${id}/transition/`
       : `/api/v1/dsrs/${id}/withdraw/`;
-  return proxyRequest(path, session, "POST", body);
+  return proxyRequest(path, session, "POST", body, request);
 }

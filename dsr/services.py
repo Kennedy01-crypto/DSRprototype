@@ -12,14 +12,18 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import timedelta
 from typing import Any
 
 from django.db import IntegrityError, transaction
+from django.db.models import F
 from django.utils import timezone
 from django_fsm import TransitionNotAllowed
 
+from . import deadlines
 from .exceptions import (
     CaseNotFound,
     WorkflowConflict,
@@ -76,12 +80,46 @@ def record_case_event(dsr: DSRRequest, actor_id: str, event_type: str, summary: 
     )
 
 
-def _lock_case(dsr_id: int, **scope: Any) -> DSRRequest:
-    """Load and lock a case. ``scope`` narrows visibility, e.g. ``patient_id``."""
+STALE_CASE_MESSAGE = (
+    "This case was changed by someone else after you opened it. "
+    "It has been reloaded; check the latest version and try again."
+)
+
+# (case id, revision) the caller last saw, set from the If-Match header.
+_expected_revision: ContextVar[tuple[int, int] | None] = ContextVar(
+    "expected_case_revision", default=None
+)
+
+
+@contextmanager
+def expect_case_revision(case_id: int, revision: int) -> Iterator[None]:
+    """Within this block, changing ``case_id`` fails with a stale-case
+    conflict unless the case is still at ``revision``."""
+    token = _expected_revision.set((case_id, revision))
     try:
-        return DSRRequest.objects.select_for_update().get(pk=dsr_id, **scope)
+        yield
+    finally:
+        _expected_revision.reset(token)
+
+
+def _lock_case(dsr_id: int, *, bump: bool = True, **scope: Any) -> DSRRequest:
+    """Load and lock a case for a change. ``scope`` narrows visibility,
+    e.g. ``patient_id``.
+
+    Checks the caller's expected revision, then raises the revision by one.
+    If the operation later fails, its transaction rolls the bump back too.
+    """
+    try:
+        dsr = DSRRequest.objects.select_for_update().get(pk=dsr_id, **scope)
     except DSRRequest.DoesNotExist as error:
         raise CaseNotFound("No request matches the given query.") from error
+    expected = _expected_revision.get()
+    if expected is not None and expected[0] == dsr.pk and expected[1] != dsr.revision:
+        raise WorkflowConflict(STALE_CASE_MESSAGE, code="stale_case")
+    if bump:
+        DSRRequest.objects.filter(pk=dsr.pk).update(revision=F("revision") + 1)
+        dsr.revision += 1
+    return dsr
 
 
 def _canonical_case_for(dsr: DSRRequest, duplicate_of_id: int | None) -> DSRRequest | None:
@@ -236,9 +274,13 @@ def set_jurisdiction(
         )
     dsr.jurisdiction_code = policy.jurisdiction_code
     dsr.deadline_policy = policy
-    dsr.response_due_at = dsr.submitted_at + timedelta(days=policy.internal_target_days)
+    dsr.response_due_at = deadlines.add_days(
+        dsr.submitted_at, policy.internal_target_days, calendar_days=policy.calendar_days
+    )
     dsr.legal_deadline_at = (
-        dsr.submitted_at + timedelta(days=policy.legal_deadline_days)
+        deadlines.add_days(
+            dsr.submitted_at, policy.legal_deadline_days, calendar_days=policy.calendar_days
+        )
         if policy.legal_deadline_days is not None
         else None
     )
@@ -549,25 +591,55 @@ def record_case_exception(
         if dsr.legal_deadline_at is None:
             raise WorkflowConflict("A legal deadline must be configured before extending it.")
     elif exception_type == Type.DEADLINE_PAUSE:
-        if (
-            policy is None
-            or not policy.pause_allowed
-            or policy_reason not in policy.pause_reasons
-            or effect_days is None
-        ):
+        if policy is None or not policy.pause_allowed or policy_reason not in policy.pause_reasons:
             raise WorkflowConflict("This policy does not authorize the requested pause.")
         if dsr.legal_deadline_at is None:
             raise WorkflowConflict("A legal deadline must be configured before pausing it.")
+        if dsr.deadline_paused_at is not None:
+            raise WorkflowConflict("The deadline clock is already paused.")
+    elif exception_type == Type.DEADLINE_RESUME and dsr.deadline_paused_at is None:
+        raise WorkflowConflict("The deadline clock is not paused.")
 
+    if (
+        exception_type in (Type.EXTENSION, Type.DEADLINE_PAUSE)
+        and policy is not None
+        and policy.notification_required
+        and not notification
+    ):
+        raise WorkflowValidationError(
+            {"patient_notification": "This policy requires patient notification."}
+        )
+
+    # Both clocks always move together, so the internal target never ends
+    # up after (or needlessly before) the legal deadline it protects.
     effect_seconds = 0
-    if exception_type in (Type.EXTENSION, Type.DEADLINE_PAUSE):
-        if policy is not None and policy.notification_required and not notification:
-            raise WorkflowValidationError(
-                {"patient_notification": "This policy requires patient notification."}
+    if exception_type == Type.EXTENSION:
+        calendar_days = policy.calendar_days
+        new_legal = deadlines.add_days(dsr.legal_deadline_at, int(effect_days), calendar_days=calendar_days)
+        effect_seconds = int((new_legal - dsr.legal_deadline_at).total_seconds())
+        dsr.legal_deadline_at = new_legal
+        dsr.response_due_at = deadlines.add_days(
+            dsr.response_due_at, int(effect_days), calendar_days=calendar_days
+        )
+        dsr.save(update_fields=("legal_deadline_at", "response_due_at", "updated_at"))
+    elif exception_type == Type.DEADLINE_PAUSE:
+        dsr.deadline_paused_at = timezone.now()
+        dsr.save(update_fields=("deadline_paused_at", "updated_at"))
+    elif exception_type == Type.DEADLINE_RESUME:
+        paused_for = timezone.now() - dsr.deadline_paused_at
+        effect_seconds = int(paused_for.total_seconds())
+        dsr.response_due_at += paused_for
+        if dsr.legal_deadline_at is not None:
+            dsr.legal_deadline_at += paused_for
+        dsr.deadline_paused_at = None
+        dsr.save(
+            update_fields=(
+                "response_due_at",
+                "legal_deadline_at",
+                "deadline_paused_at",
+                "updated_at",
             )
-        effect_seconds = int(effect_days) * 24 * 60 * 60
-        dsr.legal_deadline_at += timedelta(seconds=effect_seconds)
-        dsr.save(update_fields=("legal_deadline_at", "updated_at"))
+        )
 
     exception = DSRCaseException.objects.create(
         dsr=dsr,
@@ -1046,8 +1118,10 @@ def run_integration_job(job_id: int) -> str | None:
 
 
 def _lock_job_and_case(job_id: int) -> tuple[IntegrationJob, DSRRequest]:
-    dsr_id = IntegrationJob.objects.values_list("dsr_id", flat=True).get(pk=job_id)
-    dsr = _lock_case(dsr_id)  # Case first, then job: same order everywhere.
+    dsr_id, kind = IntegrationJob.objects.values_list("dsr_id", "kind").get(pk=job_id)
+    # Case first, then job: same order everywhere. A finished notification
+    # changes nothing staff decide on, so it doesn't make their screen stale.
+    dsr = _lock_case(dsr_id, bump=kind != IntegrationJob.Kind.PATIENT_NOTIFICATION)
     return IntegrationJob.objects.select_for_update().get(pk=job_id), dsr
 
 

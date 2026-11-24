@@ -31,6 +31,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { caseRequest, StaleCaseError } from "@/lib/case-request";
 import { formatSlaDue } from "@/lib/format-sla";
 import { useCurrentTime } from "@/hooks/use-current-time";
 import type { DemoRole, DSRCaseDetailResponse } from "@/lib/types";
@@ -81,6 +82,14 @@ function formatDate(value: string): string {
     timeStyle: "short",
     timeZone: "Africa/Nairobi",
   }).format(new Date(value));
+}
+
+function formatDuration(seconds: number): string {
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.round((seconds % 86400) / 3600);
+  if (days && hours) return `${days} day${days === 1 ? "" : "s"} ${hours} h`;
+  if (days) return `${days} day${days === 1 ? "" : "s"}`;
+  return `${Math.max(1, hours)} h`;
 }
 
 function statusVariant(state: string): "default" | "secondary" | "destructive" | "outline" {
@@ -192,6 +201,16 @@ export function DpoRequestDetail({
     };
   }, [id]);
 
+  function reportError(error: unknown, fallback: string) {
+    if (error instanceof StaleCaseError) {
+      // Someone else changed the case: reload it so the user sees the latest version.
+      toast.warning(error.message);
+      void loadCase(false);
+      return;
+    }
+    toast.error(error instanceof Error ? error.message : fallback);
+  }
+
   async function submitMutation(
     event: FormEvent<HTMLFormElement>,
     method: "PATCH" | "POST",
@@ -209,15 +228,12 @@ export function DpoRequestDetail({
     }
     setSaving(true);
     try {
-      const response = await fetch(`/api/requests/${id}`, {
+      await caseRequest(`/api/requests/${id}`, {
         method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        payload,
+        revision: data?.request.revision,
+        fallbackError: "The request could not be updated.",
       });
-      const body = (await response.json()) as { detail?: string };
-      if (!response.ok) {
-        throw new Error(body.detail ?? "The request could not be updated.");
-      }
       const refreshedCase = await loadCase(false);
       toast.success(
         method === "POST"
@@ -227,9 +243,7 @@ export function DpoRequestDetail({
           : successMessage,
       );
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "The request could not be updated.",
-      );
+      reportError(error, "The request could not be updated.");
     } finally {
       setSaving(false);
     }
@@ -241,22 +255,17 @@ export function DpoRequestDetail({
     if (!trimmedMessage) return;
     setSendingMessage(true);
     try {
-      const response = await fetch(`/api/requests/${id}/communications`, {
+      await caseRequest(`/api/requests/${id}/communications`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: trimmedMessage }),
+        payload: { message: trimmedMessage },
+        revision: data?.request.revision,
+        fallbackError: "The message could not be sent.",
       });
-      const body = (await response.json()) as { detail?: string };
-      if (!response.ok) {
-        throw new Error(body.detail ?? "The message could not be sent.");
-      }
       setMessage("");
       toast.success("Message added to the patient portal.");
       await loadCase(false);
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "The message could not be sent.",
-      );
+      reportError(error, "The message could not be sent.");
     } finally {
       setSendingMessage(false);
     }
@@ -266,20 +275,19 @@ export function DpoRequestDetail({
     event.preventDefault();
     setTaskSaving(true);
     try {
-      const response = await fetch(`/api/requests/${id}/tasks`, {
+      await caseRequest(`/api/requests/${id}/tasks`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        payload: {
           title: taskTitle.trim(),
           task_type: taskType,
           assigned_to: taskAssignee.trim(),
           details: taskDetails.trim(),
           due_at: taskDueAt ? new Date(taskDueAt).toISOString() : null,
           required_for_completion: taskRequired,
-        }),
+        },
+        revision: data?.request.revision,
+        fallbackError: "Could not create the work item.",
       });
-      const body = (await response.json()) as { detail?: string };
-      if (!response.ok) throw new Error(body.detail ?? "Could not create the work item.");
       setTaskTitle("");
       setTaskAssignee("");
       setTaskDetails("");
@@ -288,7 +296,7 @@ export function DpoRequestDetail({
       toast.success("Parallel work item created.");
       await loadCase(false);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not create the work item.");
+      reportError(error, "Could not create the work item.");
     } finally {
       setTaskSaving(false);
     }
@@ -305,17 +313,16 @@ export function DpoRequestDetail({
     }
     setTaskSaving(true);
     try {
-      const response = await fetch(`/api/requests/${id}/tasks/${itemId}`, {
+      await caseRequest(`/api/requests/${id}/tasks/${itemId}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status, completion_summary: completionSummary }),
+        payload: { status, completion_summary: completionSummary },
+        revision: data?.request.revision,
+        fallbackError: "Could not update the work item.",
       });
-      const body = (await response.json()) as { detail?: string };
-      if (!response.ok) throw new Error(body.detail ?? "Could not update the work item.");
       toast.success("Work item updated.");
       await loadCase(false);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not update the work item.");
+      reportError(error, "Could not update the work item.");
     } finally {
       setTaskSaving(false);
     }
@@ -325,23 +332,22 @@ export function DpoRequestDetail({
     event.preventDefault();
     setExceptionSaving(true);
     try {
-      const response = await fetch(`/api/requests/${id}/exceptions`, {
+      await caseRequest(`/api/requests/${id}/exceptions`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        payload: {
           exception_type: exceptionType,
           reason: exceptionReason.trim(),
           patient_notification: patientNotification.trim(),
           ...(exceptionType === "DEADLINE_PAUSE"
             ? { policy_reason: exceptionPolicyReason.trim() }
             : {}),
-          ...(exceptionType === "EXTENSION" || exceptionType === "DEADLINE_PAUSE"
+          ...(exceptionType === "EXTENSION"
             ? { deadline_effect_days: Number(deadlineEffectDays) }
             : {}),
-        }),
+        },
+        revision: data?.request.revision,
+        fallbackError: "Could not record the exception.",
       });
-      const body = (await response.json()) as { detail?: string };
-      if (!response.ok) throw new Error(body.detail ?? "Could not record the exception.");
       setExceptionReason("");
       setExceptionPolicyReason("");
       setPatientNotification("");
@@ -349,7 +355,7 @@ export function DpoRequestDetail({
       toast.success("Case exception recorded and audited.");
       await loadCase(false);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not record the exception.");
+      reportError(error, "Could not record the exception.");
     } finally {
       setExceptionSaving(false);
     }
@@ -359,21 +365,20 @@ export function DpoRequestDetail({
     event.preventDefault();
     setSaving(true);
     try {
-      const response = await fetch(`/api/requests/${id}/jurisdiction`, {
+      await caseRequest(`/api/requests/${id}/jurisdiction`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        payload: {
           jurisdiction_code: jurisdictionCode.trim().toUpperCase(),
           reason: jurisdictionReason.trim(),
-        }),
+        },
+        revision: data?.request.revision,
+        fallbackError: "Could not classify the jurisdiction.",
       });
-      const body = (await response.json()) as { detail?: string };
-      if (!response.ok) throw new Error(body.detail ?? "Could not classify the jurisdiction.");
       setJurisdictionReason("");
       toast.success("Jurisdiction and deadline-policy snapshot updated.");
       await loadCase(false);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not classify the jurisdiction.");
+      reportError(error, "Could not classify the jurisdiction.");
     } finally {
       setSaving(false);
     }
@@ -383,8 +388,10 @@ export function DpoRequestDetail({
     (item) => item.action === action,
   );
   const requiresReason = requiredReasonActions.has(action);
+  const paused = !!data?.request.deadline_paused_at;
   const overdue =
     !!data &&
+    !paused &&
     (data.request.time_remaining_seconds <= 0 ||
       data.request.legal_time_remaining_seconds === 0) &&
     data.request.state !== "Completed";
@@ -459,6 +466,7 @@ export function DpoRequestDetail({
                     <Badge variant="outline">Waiting for patient information</Badge>
                   )}
                   {overdue && <Badge variant="destructive">Overdue</Badge>}
+                  {paused && <Badge variant="outline">Deadline clock paused</Badge>}
                 </div>
               </CardContent>
             </Card>
@@ -506,9 +514,11 @@ export function DpoRequestDetail({
                       </dt>
                       <dd className={`mt-1 text-sm font-medium ${overdue ? "text-rose-700" : ""}`}>
                         {formatDate(data.request.response_due_at)}
-                        {data.request.state !== "Completed"
-                          ? ` · ${formatSlaDue(data.request.response_due_at, currentTime, data.request.time_remaining_seconds)}`
-                          : " · Target date"}
+                        {data.request.state === "Completed"
+                          ? " · Target date"
+                          : paused
+                            ? " · clock paused; moves forward when resumed"
+                            : ` · ${formatSlaDue(data.request.response_due_at, currentTime, data.request.time_remaining_seconds)}`}
                       </dd>
                     </div>
                     <div className="sm:col-span-2">
@@ -517,7 +527,7 @@ export function DpoRequestDetail({
                       </dt>
                       <dd className="mt-1 text-sm font-medium">
                         {data.request.legal_deadline_at
-                          ? formatDate(data.request.legal_deadline_at)
+                          ? `${formatDate(data.request.legal_deadline_at)}${paused ? " · clock paused" : ""}`
                           : "Not configured"}
                       </dd>
                     </div>
@@ -1093,15 +1103,23 @@ export function DpoRequestDetail({
                             <p className="mt-1 text-xs text-muted-foreground">
                               Recorded by {item.actor_id} · {formatDate(item.created_at)}
                               {item.deadline_effect_seconds
-                                ? ` · deadline effect ${Math.round(item.deadline_effect_seconds / 86400)} days`
+                                ? ` · deadlines moved ${formatDuration(item.deadline_effect_seconds)}`
                                 : ""}
                             </p>
                           </li>
                         ))}
                       </ul>
                     )}
+                    {paused && (
+                      <p className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-950">
+                        The deadline clocks have been paused since {formatDate(data.request.deadline_paused_at!)}.
+                        Both deadlines move forward by the paused time when you resume them.
+                      </p>
+                    )}
                     <form onSubmit={(event) => void createException(event)} className="space-y-3">
                       <select
+                        id="exception-type"
+                        aria-label="Exception type"
                         value={exceptionType}
                         onChange={(event) => setExceptionType(event.target.value)}
                         className="h-10 w-full rounded-lg border border-input bg-white px-3 text-sm"
@@ -1109,8 +1127,12 @@ export function DpoRequestDetail({
                         <option value="CLARIFICATION">Clarification required</option>
                         <option value="OUT_OF_SCOPE">Out of scope</option>
                         <option value="UNABLE_TO_PROCESS">Unable to process</option>
-                        <option value="EXTENSION">Authorized deadline extension</option>
-                        <option value="DEADLINE_PAUSE">Authorized deadline pause</option>
+                        <option value="EXTENSION">Authorized deadline extension (both deadlines)</option>
+                        {paused ? (
+                          <option value="DEADLINE_RESUME">Resume the paused deadline clock</option>
+                        ) : (
+                          <option value="DEADLINE_PAUSE">Pause the deadline clock (policy reason)</option>
+                        )}
                       </select>
                       <Textarea
                         value={exceptionReason}
@@ -1119,14 +1141,14 @@ export function DpoRequestDetail({
                         required
                         maxLength={4000}
                       />
-                      {(exceptionType === "EXTENSION" || exceptionType === "DEADLINE_PAUSE") && (
+                      {exceptionType === "EXTENSION" && (
                         <Input
                           type="number"
                           min={1}
                           max={3650}
                           value={deadlineEffectDays}
                           onChange={(event) => setDeadlineEffectDays(event.target.value)}
-                          placeholder="Authorized deadline adjustment in days"
+                          placeholder="Days to extend, counted the way the policy counts (calendar or business)"
                           required
                         />
                       )}
@@ -1142,8 +1164,12 @@ export function DpoRequestDetail({
                       <Textarea
                         value={patientNotification}
                         onChange={(event) => setPatientNotification(event.target.value)}
-                        placeholder="Patient-facing notice (required for intake/clock exceptions)"
-                        required
+                        placeholder={
+                          exceptionType === "DEADLINE_RESUME"
+                            ? "Patient-facing notice (optional when resuming)"
+                            : "Patient-facing notice (required)"
+                        }
+                        required={exceptionType !== "DEADLINE_RESUME"}
                         maxLength={4000}
                       />
                       <Button
@@ -1151,10 +1177,9 @@ export function DpoRequestDetail({
                         disabled={
                           exceptionSaving ||
                           !exceptionReason.trim() ||
-                          !patientNotification.trim() ||
+                          (exceptionType !== "DEADLINE_RESUME" && !patientNotification.trim()) ||
                           (exceptionType === "DEADLINE_PAUSE" && !exceptionPolicyReason.trim()) ||
-                          ((exceptionType === "EXTENSION" || exceptionType === "DEADLINE_PAUSE") &&
-                            !deadlineEffectDays)
+                          (exceptionType === "EXTENSION" && !deadlineEffectDays)
                         }
                       >
                         {exceptionSaving ? "Saving…" : "Record exception"}

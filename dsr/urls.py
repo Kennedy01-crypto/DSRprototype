@@ -30,10 +30,14 @@ from .views import (
     DSRAssignedWorkView,
     DSRAssignedReviewsView,
     api_index,
+    healthz,
+    readyz,
 )
 
 urlpatterns = [
     path("", api_index, name="api-index"),
+    path("healthz", healthz, name="healthz"),
+    path("readyz", readyz, name="readyz"),
     path(
         "api/v1/dpo/policies/",
         DSRDeadlinePolicyView.as_view(),

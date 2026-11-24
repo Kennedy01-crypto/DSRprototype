@@ -1,42 +1,9 @@
-import { NextResponse } from "next/server";
-
-import { backendError, backendRequest } from "@/lib/backend";
-import { getDemoSession } from "@/lib/session";
+import { invalidIdResponse, isRecordId, proxyDpo } from "@/lib/dpo-proxy";
 
 type RouteContext = { params: Promise<{ id: string; taskId: string }> };
 
 export async function PATCH(request: Request, context: RouteContext) {
-  const session = await getDemoSession();
-  if (!session) {
-    return NextResponse.json({ detail: "Sign in to the demo workspace." }, { status: 401 });
-  }
-  if (session.role !== "dpo") {
-    return NextResponse.json({ detail: "Only DPOs can manage case work items." }, { status: 403 });
-  }
   const { id, taskId } = await context.params;
-  if (!/^[1-9]\d*$/.test(id) || !/^[1-9]\d*$/.test(taskId)) {
-    return NextResponse.json({ detail: "Invalid work item reference." }, { status: 400 });
-  }
-  let body: string;
-  try {
-    body = JSON.stringify(await request.json());
-  } catch {
-    return NextResponse.json({ detail: "Invalid JSON body." }, { status: 400 });
-  }
-  try {
-    const upstream = await backendRequest(
-      `/api/v1/dpo/dsrs/${id}/tasks/${taskId}/`,
-      session,
-      { method: "PATCH", body },
-    );
-    if (!upstream.ok) {
-      return NextResponse.json({ detail: await backendError(upstream) }, { status: upstream.status });
-    }
-    return NextResponse.json(await upstream.json(), { status: upstream.status });
-  } catch {
-    return NextResponse.json(
-      { detail: "Unable to update the work item. Check that the DSR API is running." },
-      { status: 502 },
-    );
-  }
+  if (!isRecordId(id, taskId)) return invalidIdResponse();
+  return proxyDpo(`/api/v1/dpo/dsrs/${id}/tasks/${taskId}/`, "PATCH", request);
 }

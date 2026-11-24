@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { caseRequest, StaleCaseError } from "@/lib/case-request";
 import type {
   DSRCaseDetailResponse,
   DSRResponseDraft,
@@ -77,15 +78,6 @@ function jobLine(job: IntegrationJob): string {
   return "Completed by automated search.";
 }
 
-async function send(url: string, method: "POST" | "PATCH", payload?: object): Promise<void> {
-  const response = await fetch(url, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload ?? {}),
-  });
-  const body = (await response.json().catch(() => ({}))) as { detail?: string };
-  if (!response.ok) throw new Error(body.detail ?? "The change could not be saved.");
-}
 
 /**
  * Evidence and response panels for the DPO case page: source searches,
@@ -109,6 +101,9 @@ export function DpoCaseEvidence({
   const readiness = data.response_readiness ?? null;
 
   const [busy, setBusy] = useState<string | null>(null);
+  const revision = data.request.revision;
+  const send = (url: string, method: "POST" | "PATCH", payload?: object) =>
+    caseRequest(url, { method, payload, revision }).then(() => undefined);
   const usedSystems = new Set(searches.map((item) => sourceCode(item.source_system)));
   const freeSystems = SOURCE_SYSTEMS.filter(([code]) => !usedSystems.has(code));
   const jobs = data.integration_jobs ?? [];
@@ -173,7 +168,12 @@ export function DpoCaseEvidence({
       toast.success(success);
       await onChanged();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "The change could not be saved.");
+      if (error instanceof StaleCaseError) {
+        toast.warning(error.message);
+        await onChanged();
+      } else {
+        toast.error(error instanceof Error ? error.message : "The change could not be saved.");
+      }
     } finally {
       setBusy(null);
     }

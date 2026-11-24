@@ -77,6 +77,17 @@ Requires a DPO token. `GET` lists the configured internal target and optional le
 
 The policy is used when new requests are submitted. Deadline monitoring records overdue events but does not change workflow state. Waiting for a patient or internal team does not pause or reset either deadline; there is currently no clock-pause mechanism.
 
+## Concurrency, deadlines and operations
+
+- **Stale edits.** `GET /api/v1/dpo/dsrs/<id>/` returns `request.revision`. Send it as `If-Match: <revision>` on any change to that case. If the case changed since, the API returns `409 {"detail": "...", "code": "stale_case"}` and changes nothing. Without `If-Match` there is no check.
+- **Exceptions.** `POST /api/v1/dpo/dsrs/<id>/exceptions/` with:
+  - `EXTENSION` and `deadline_effect_days`: moves both deadlines, in the policy's calendar or business days, up to the policy maximum.
+  - `DEADLINE_PAUSE` and `policy_reason` (one of the policy's pause reasons): stops both clocks. `409` if already paused. No day count.
+  - `DEADLINE_RESUME`: restarts the clocks and moves both deadlines forward by the paused time; `deadline_effect_seconds` on the record shows by how much. `409` if not paused. Patient notice optional.
+- Case responses include `deadline_paused_at`. While paused, `time_remaining_seconds` and `legal_time_remaining_seconds` are frozen, the case is never overdue, and `GET /api/v1/dpo/dsrs/?queue=paused` lists it.
+- **Health.** `GET /healthz` (liveness) and `GET /readyz` (database and queue; `503` when either is down).
+- **Request IDs.** Send `X-Request-ID` (8-64 of `A-Z a-z 0-9 . _ -`) to have it used in logs and echoed back; otherwise one is generated and returned.
+
 ## Integrations
 
 Automated source searches and patient notifications run as **integration jobs**. A job is saved in the same database transaction as the case change that needs it, then run by the Celery worker. Calls to other systems happen outside any database transaction.

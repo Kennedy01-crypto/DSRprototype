@@ -79,6 +79,8 @@ const queues = [
   ["due_soon", "Due in the next 7 days"],
   ["unassigned", "Unassigned"],
   ["waiting", "Waiting for patient"],
+  ["escalated", "Escalated"],
+  ["paused", "Deadline clock paused"],
 ];
 
 const queuePresets = [

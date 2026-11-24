@@ -92,6 +92,7 @@ class DSRStatusSerializer(serializers.ModelSerializer):
             "duplicate_of", "reconsideration_of", "submitted_at",
             "response_due_at", "time_remaining_seconds",
             "closed_at", "disposition_initiator", "jurisdiction_code",
+            "deadline_paused_at",
         )
 
     def get_state(self, obj: DSRRequest) -> str:
@@ -101,12 +102,8 @@ class DSRStatusSerializer(serializers.ModelSerializer):
         return max(0, int(obj.time_remaining().total_seconds()))
 
     def get_legal_time_remaining_seconds(self, obj: DSRRequest) -> int | None:
-        if obj.legal_deadline_at is None:
-            return None
-        return max(
-            0,
-            int((obj.legal_deadline_at - timezone.now()).total_seconds()),
-        )
+        remaining = obj.legal_time_remaining()
+        return None if remaining is None else max(0, int(remaining.total_seconds()))
 
     def get_resolution_status(self, obj: DSRRequest) -> str:
         if obj.resolution_status == DSRRequest.ResolutionStatus.WITHDRAWN:
@@ -142,6 +139,7 @@ class DSRDPOStatusSerializer(DSRStatusSerializer):
             "case_stage",
             "escalation_active",
             "waiting_for_subject_information",
+            "revision",
         )
 
     def get_legal_review_completed(self, obj: DSRRequest) -> bool:
@@ -296,12 +294,9 @@ class DSRCaseExceptionCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {"patient_notification": "Record the patient-facing notification."}
             )
-        if exception_type in {
-            DSRCaseException.ExceptionType.EXTENSION,
-            DSRCaseException.ExceptionType.DEADLINE_PAUSE,
-        } and effect_days is None:
+        if exception_type == DSRCaseException.ExceptionType.EXTENSION and effect_days is None:
             raise serializers.ValidationError(
-                {"deadline_effect_days": "Record the authorized number of deadline days."}
+                {"deadline_effect_days": "Record the authorized number of extension days."}
             )
         if (
             exception_type == DSRCaseException.ExceptionType.DEADLINE_PAUSE

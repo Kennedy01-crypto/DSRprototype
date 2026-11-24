@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import sys
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -14,6 +15,7 @@ INSTALLED_APPS = [
     "dsr",
 ]
 MIDDLEWARE = [
+    "dsr.observability.RequestIdMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -77,3 +79,33 @@ DSR_SOURCE_CONNECTORS = {
     "DYNAMICS": "dsr.integrations.mock.MockSourceConnector",
 }
 DSR_PATIENT_NOTIFIER = "dsr.integrations.mock.PortalOnlyNotifier"
+
+# Business-day deadlines skip weekends and these dates (YYYY-MM-DD).
+# EXAMPLE ONLY: confirm against the Kenya Gazette each year, and add moveable
+# holidays (e.g. Idd-ul-Fitr) and substitute days when they are announced.
+DSR_PUBLIC_HOLIDAYS = [
+    "2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01", "2026-06-01",
+    "2026-10-10", "2026-10-20", "2026-12-12", "2026-12-25", "2026-12-26",
+]
+
+# One JSON object per log line, each tagged with the request ID.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "filters": {"request_id": {"()": "dsr.observability.RequestIdFilter"}},
+    "formatters": {"json": {"()": "dsr.observability.JsonFormatter"}},
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "filters": ["request_id"],
+            "formatter": "json",
+        }
+    },
+    "root": {"handlers": ["console"], "level": os.environ.get("DSR_LOG_LEVEL", "INFO")},
+    "loggers": {
+        "django.request": {"level": "ERROR"},
+        "django.server": {"level": "WARNING"},
+    },
+}
+if "test" in sys.argv:  # Keep test output readable.
+    LOGGING["root"]["level"] = "WARNING"

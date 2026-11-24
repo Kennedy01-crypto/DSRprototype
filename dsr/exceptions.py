@@ -24,7 +24,15 @@ class CaseNotFound(WorkflowError):
 
 
 class WorkflowConflict(WorkflowError):
-    """The action is not allowed in the case's current state. Nothing was changed."""
+    """The action is not allowed in the case's current state. Nothing was changed.
+
+    ``code`` lets clients react to specific conflicts, e.g. ``stale_case``
+    (reload and try again).
+    """
+
+    def __init__(self, message: str, *, code: str = "") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class WorkflowForbidden(WorkflowError):
@@ -46,6 +54,8 @@ def api_exception_handler(exc: Exception, context: dict[str, Any]) -> Response |
         return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
     if isinstance(exc, WorkflowValidationError):
         return Response(exc.errors, status=status.HTTP_400_BAD_REQUEST)
+    if isinstance(exc, WorkflowConflict) and exc.code:
+        return Response({"detail": str(exc), "code": exc.code}, status=status.HTTP_409_CONFLICT)
     if isinstance(exc, (WorkflowConflict, TransitionNotAllowed)):
         return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
     return drf_exception_handler(exc, context)

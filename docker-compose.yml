@@ -32,9 +32,19 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dsr}
       POSTGRES_HOST: db
       CELERY_BROKER_URL: redis://redis:6379/0
-    command: sh -c "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8002 --workers 3"
+    command: sh -c "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8002 --workers 3 --timeout 60"
     ports:
       - "8002:8002"
+    # Ready = migrations done and the database and queue reachable. Kept
+    # infrequent: each check starts a Python process, which is not free on a
+    # small Docker VM.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/readyz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+      start_interval: 5s
     depends_on:
       db:
         condition: service_healthy
@@ -45,10 +55,11 @@ services:
     build: .
     environment: *app-env
     command: celery -A config.celery:app worker --loglevel=INFO
+    # No health check: `celery inspect ping` starts a whole Celery process
+    # each time, which starved a 2-CPU Docker VM. Stuck work is caught by the
+    # every-minute dispatcher and shows on the DPO Integrations page.
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
+      web:
         condition: service_healthy
 
   beat:
@@ -56,7 +67,7 @@ services:
     environment: *app-env
     command: celery -A config.celery:app beat --loglevel=INFO
     depends_on:
-      redis:
+      web:
         condition: service_healthy
 
   frontend:
@@ -78,7 +89,7 @@ services:
       - frontend_next:/app/.next
     depends_on:
       web:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   postgres_data:

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { backendError, backendRequest } from "@/lib/backend";
+import { backendErrorBody, backendRequest, caseHeaders } from "@/lib/backend";
 import { getDemoSession } from "@/lib/session";
 
 const RECORD_ID = /^[1-9]\d*$/;
@@ -41,13 +41,11 @@ export async function proxyDpo(
   try {
     const upstream = await backendRequest(path, session, {
       method,
+      headers: caseHeaders(request),
       ...(body === undefined ? {} : { body }),
     });
     if (!upstream.ok) {
-      return NextResponse.json(
-        { detail: await backendError(upstream) },
-        { status: upstream.status },
-      );
+      return NextResponse.json(await backendErrorBody(upstream), { status: upstream.status });
     }
     return NextResponse.json(await upstream.json(), { status: upstream.status });
   } catch {

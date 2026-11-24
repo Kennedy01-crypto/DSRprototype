@@ -124,13 +124,15 @@ def filtered_dpo_requests(
     if assignee_filter:
         requests = requests.filter(assigned_to__iexact=assignee_filter)
     now = timezone.now()
+    # Cases with a paused deadline clock are neither overdue nor due soon.
+    running = requests.filter(state__in=ACTIVE_STATES, deadline_paused_at__isnull=True)
     if queue_filter == "overdue":
-        requests = requests.filter(state__in=ACTIVE_STATES).filter(
-            Q(response_due_at__lt=now) | Q(legal_deadline_at__lt=now)
-        )
+        requests = running.filter(Q(response_due_at__lt=now) | Q(legal_deadline_at__lt=now))
+    elif queue_filter == "paused":
+        requests = requests.filter(state__in=ACTIVE_STATES, deadline_paused_at__isnull=False)
     elif queue_filter == "due_soon":
         requests = (
-            requests.filter(state__in=ACTIVE_STATES)
+            running
             .exclude(Q(response_due_at__lt=now) | Q(legal_deadline_at__lt=now))
             .filter(
                 Q(response_due_at__lte=now + timedelta(days=7))

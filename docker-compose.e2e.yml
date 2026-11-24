@@ -1,0 +1,18 @@
+# Browser-test mode: serve a production build of the frontend instead of the
+# dev server. Dev mode compiles pages on demand and can stall for minutes on
+# a slow (e.g. Windows bind-mounted) file system, which makes browser tests
+# flaky. Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d --wait
+# and go back to the dev server with:
+#   docker compose up -d frontend
+services:
+  frontend:
+    environment:
+      NODE_ENV: production
+    command: sh -c "npm run build && npm run start -- --hostname 0.0.0.0 --port 3002"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3002/login').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 900s

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { backendError, backendRequest } from "@/lib/backend";
+import { backendErrorBody, backendRequest, caseHeaders } from "@/lib/backend";
 import { getDemoSession } from "@/lib/session";
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -68,13 +68,14 @@ export async function POST(request: Request, context: RouteContext) {
     const upstream = await backendRequest(
       endpoint,
       session,
-      { method: "POST", body: JSON.stringify({ message: body.message.trim() }) },
+      {
+        method: "POST",
+        headers: caseHeaders(request),
+        body: JSON.stringify({ message: body.message.trim() }),
+      },
     );
     if (!upstream.ok) {
-      return NextResponse.json(
-        { detail: await backendError(upstream) },
-        { status: upstream.status },
-      );
+      return NextResponse.json(await backendErrorBody(upstream), { status: upstream.status });
     }
     return NextResponse.json(await upstream.json(), { status: upstream.status });
   } catch {

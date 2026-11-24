@@ -134,6 +134,31 @@ To connect a real system, subclass `SourceConnector` in `dsr/integrations/base.p
 
 Jobs retry on their own and end in the DPO's **Integrations** page when they give up. See [API_README.md](API_README.md#integrations) for the exact behaviour.
 
+## Deadlines
+
+- Each case has an **internal target** and, if the policy sets one, a **legal deadline**, both set at submission from the policy version in force.
+- A policy counts either **calendar days** or **business days**. Business days skip weekends and the dates in `DSR_PUBLIC_HOLIDAYS` in `config/settings.py`. That list is an example; confirm it against the Kenya Gazette each year and add moveable holidays when announced.
+- An **extension** (if the policy allows it) moves both deadlines by the same number of days, counted the way the policy counts.
+- A **pause** (if the policy allows it, with an approved reason) stops both clocks. While paused the case is not overdue and appears in the "Deadline clock paused" queue. **Resuming** moves both deadlines forward by exactly the time spent paused.
+- Nothing pauses a clock automatically: waiting for the patient, an escalation or a blocked search does not.
+
+## Working safely with others
+
+Every case has a `revision` number that goes up with each change. The case screen sends it back with each change (`If-Match`). If someone else changed the case in the meantime, the change is refused with `409` and `"code": "stale_case"`, the screen reloads, and nothing is overwritten. API clients that don't send `If-Match` are not checked.
+
+## Operations
+
+- `GET /healthz`: the process is up.
+- `GET /readyz`: the database and the job queue are reachable (`503` with the failing check otherwise). Docker Compose uses it: the frontend, worker and scheduler start only after the API is ready, which also means migrations have run.
+- **Logs** are one JSON object per line. Every HTTP request logs method, path, status, duration and the acting role and ID, tagged with a **request ID**. The Next.js proxy sends an `X-Request-ID` with each call and Django returns it, so one problem can be traced across both. For server errors the UI shows the first characters of the ID as a reference to quote.
+- Set `DSR_LOG_LEVEL` (default `INFO`) to change verbosity.
+
+## Tests
+
+- Backend: `docker compose exec web python manage.py test dsr`
+- Browser tests (Playwright): start the stack with a production frontend build, `docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d --wait`, then `cd e2e && npm install && npx playwright install chromium && npm test`. Return to the dev server afterwards with `docker compose up -d frontend`. (The dev server compiles on demand and can stall for minutes, which makes browser tests unreliable.)
+- CI (`.github/workflows/ci.yml`) runs backend tests with a missing-migration check, frontend type-check and lint, and the browser tests against the full Docker stack on every push.
+
 ## Celery and SLA monitoring
 
 The project includes a Beat schedule that runs `monitor_sla_deadlines` every 15 minutes. It records overdue events for active internal targets and configured legal deadlines; it does not change request states or pause/reset clocks. Waiting for internal teams is an operational delay, not a reason to stop a deadline. Confirm the applicable jurisdiction's legal timeline with authorized privacy/legal owners before setting legal deadlines or using this prototype beyond mock data.
@@ -148,6 +173,10 @@ The project includes a Beat schedule that runs `monitor_sla_deadlines` every 15 
 - `dsr/exceptions.py` - workflow errors and their HTTP mapping
 - `dsr/permissions.py` - role gate for every API view
 - `dsr/integrations/` - connector and notifier interfaces, mock implementations, and the settings-driven registry
+- `dsr/deadlines.py` - calendar and business-day deadline arithmetic
+- `dsr/observability.py` - request IDs and JSON logs
+- `e2e/` - Playwright browser tests
+- `.github/workflows/ci.yml` - continuous integration
 - `frontend/` - Next.js user interface
 - `docker-compose.yml` - service orchestration for local development
 - `Dockerfile` - container build definition

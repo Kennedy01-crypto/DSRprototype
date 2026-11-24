@@ -12,6 +12,9 @@ import csv
 import re
 from collections.abc import Mapping
 
+import redis
+from django.conf import settings
+from django.db import connection
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -78,6 +81,37 @@ def api_index(request: HttpRequest) -> JsonResponse:
     )
 
 
+def healthz(request: HttpRequest) -> JsonResponse:
+    """Liveness: the process is up and serving. Checks nothing else."""
+    return JsonResponse({"status": "ok"})
+
+
+def readyz(request: HttpRequest) -> JsonResponse:
+    """Readiness: the database and the job queue can be reached. Returns 503
+    with the failing check names (never error details) when they can't."""
+    checks: dict[str, str] = {}
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+        checks["database"] = "ok"
+    except Exception as error:
+        checks["database"] = f"unavailable ({type(error).__name__})"
+    try:
+        redis.Redis.from_url(
+            settings.CELERY_BROKER_URL, socket_connect_timeout=1, socket_timeout=1
+        ).ping()
+        checks["queue"] = "ok"
+    except Exception as error:
+        checks["queue"] = f"unavailable ({type(error).__name__})"
+    ready = all(value == "ok" for value in checks.values())
+    response = JsonResponse(
+        {"status": "ok" if ready else "unavailable", "checks": checks},
+        status=200 if ready else 503,
+    )
+    response._has_been_logged = True  # An expected 503 is not a server error.
+    return response
+
+
 # --------------------------------------------------------------------------
 # Base classes
 # --------------------------------------------------------------------------
@@ -94,6 +128,16 @@ class RoleAPIView(APIView):
     def principal(self, request: Request) -> SimulatedPrincipal:
         assert isinstance(request.user, SimulatedPrincipal)
         return request.user
+
+    def dispatch(self, request: HttpRequest, *args: object, **kwargs: object) -> HttpResponse:
+        """``If-Match: <revision>`` on a case URL makes any change fail with a
+        ``stale_case`` conflict if the case moved on since the caller loaded it."""
+        if_match = request.headers.get("If-Match", "").strip().strip('"')
+        case_id = kwargs.get("pk")
+        if if_match.isdigit() and case_id is not None:
+            with services.expect_case_revision(int(case_id), int(if_match)):
+                return super().dispatch(request, *args, **kwargs)
+        return super().dispatch(request, *args, **kwargs)
 
     def principal_id(self, request: Request) -> str:
         return self.principal(request).patient_id

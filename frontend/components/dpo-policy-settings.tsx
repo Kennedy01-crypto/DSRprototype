@@ -83,6 +83,7 @@ export function DpoPolicySettings({ principalId }: { principalId: string }) {
       | "internal_target_days"
       | "legal_deadline_input"
       | "policy_source"
+      | "calendar_days"
       | "extension_allowed"
       | "maximum_extension_days"
       | "pause_allowed"
@@ -135,7 +136,7 @@ export function DpoPolicySettings({ principalId }: { principalId: string }) {
           legal_deadline_days: legalDeadlineDays,
           policy_source: policy.policy_source,
           clock_start_event: "SUBMITTED",
-          calendar_days: true,
+          calendar_days: policy.calendar_days,
           extension_allowed: policy.extension_allowed,
           maximum_extension_days: policy.maximum_extension_days,
           pause_allowed: policy.pause_allowed,
@@ -255,7 +256,7 @@ export function DpoPolicySettings({ principalId }: { principalId: string }) {
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor={`${policy.id}-internal`}>
-                            Internal target (calendar days)
+                            Internal target ({policy.calendar_days ? "calendar" : "business"} days)
                           </Label>
                           <Input
                             id={`${policy.id}-internal`}
@@ -275,7 +276,7 @@ export function DpoPolicySettings({ principalId }: { principalId: string }) {
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor={`${policy.id}-legal`}>
-                            Legal deadline (calendar days)
+                            Legal deadline ({policy.calendar_days ? "calendar" : "business"} days)
                           </Label>
                           <Input
                             id={`${policy.id}-legal`}
@@ -307,6 +308,23 @@ export function DpoPolicySettings({ principalId }: { principalId: string }) {
                           }
                         />
                       </div>
+                      <label className="flex items-start gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={!policy.calendar_days}
+                          onChange={(event) =>
+                            updatePolicy(policy.id, "calendar_days", !event.target.checked)
+                          }
+                        />
+                        <span>
+                          Count business days
+                          <span className="block text-xs text-muted-foreground">
+                            Skip weekends and the public holidays configured on the server. Applies
+                            to new requests and to extensions.
+                          </span>
+                        </span>
+                      </label>
                       <div className="grid gap-3 sm:grid-cols-2">
                         <label className="flex items-center gap-2 text-sm">
                           <input
@@ -345,7 +363,7 @@ export function DpoPolicySettings({ principalId }: { principalId: string }) {
                               updatePolicy(policy.id, "pause_allowed", event.target.checked)
                             }
                           />
-                          Allow authorized clock pauses
+                          Allow authorized clock pauses (stop and restart)
                         </label>
                         <label className="flex items-center gap-2 text-sm">
                           <input

@@ -38,6 +38,10 @@ export interface DSRRequest {
   duplicate_of?: number | null;
   time_remaining_seconds: number;
   closed_at: string | null;
+  /** Set while the deadline clocks are paused under the policy. */
+  deadline_paused_at?: string | null;
+  /** DPO view only: send back as If-Match when changing the case. */
+  revision?: number;
 }
 
 export interface DPOQueueResponse {
@@ -60,6 +64,8 @@ export interface DSRDeadlinePolicy {
   effective_at: string;
   internal_target_days: number;
   legal_deadline_days: number | null;
+  /** False: day counts are business days (no weekends or public holidays). */
+  calendar_days: boolean;
   policy_source: string;
   extension_allowed: boolean;
   maximum_extension_days: number;

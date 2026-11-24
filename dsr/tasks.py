@@ -60,9 +60,10 @@ def monitor_sla_deadlines() -> int:
         DSRRequest.State.ESCALATED,
     ]
     now = timezone.now()
-    requests = DSRRequest.objects.filter(state__in=active_states).filter(
-        Q(response_due_at__lt=now) | Q(legal_deadline_at__lt=now)
-    )
+    # A paused clock is not running, so it can't pass a deadline.
+    requests = DSRRequest.objects.filter(
+        state__in=active_states, deadline_paused_at__isnull=True
+    ).filter(Q(response_due_at__lt=now) | Q(legal_deadline_at__lt=now))
     recorded = 0
     for dsr in requests.iterator():
         deadlines = [
